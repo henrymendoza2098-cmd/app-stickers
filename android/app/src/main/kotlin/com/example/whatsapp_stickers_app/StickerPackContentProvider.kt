@@ -132,12 +132,15 @@ class StickerPackContentProvider : ContentProvider() {
         val cursor = MatrixCursor(
             arrayOf(STICKER_FILE_NAME_IN_QUERY, STICKER_FILE_EMOJI_IN_QUERY, STICKER_FILE_ACCESSIBILITY_TEXT_IN_QUERY)
         )
-        val pack = StickerPackRepository.getAllPacks(context!!).find { it.identifier == identifier }
-        pack?.stickers?.forEach { sticker ->
-            cursor.newRow()
-                .add(sticker.imageFileName)
-                .add(TextUtils.join(",", sticker.emojis))
-                .add(sticker.accessibilityText ?: "")
+        for (pack in StickerPackRepository.getAllPacks(context!!)) {
+            if (pack.identifier == identifier) {
+                for (sticker in pack.stickers) {
+                    cursor.newRow()
+                        .add(sticker.imageFileName)
+                        .add(TextUtils.join(",", sticker.emojis))
+                        .add(sticker.accessibilityText ?: "")
+                }
+            }
         }
         cursor.setNotificationUri(context!!.contentResolver, uri)
         return cursor

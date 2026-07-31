@@ -33,16 +33,7 @@ class MainActivity : FlutterActivity() {
                             result.success(StickerPackRepository.trayBytes(applicationContext, identifier))
                         }
                     }
-                    "getStickersForPack" -> {
-                        val identifier = call.argument<String>("identifier")
-                        if (identifier == null) {
-                            result.error("MISSING_ARGS", "Falta identifier", null)
-                        } else {
-                            result.success(StickerPackRepository.stickerBytesForPack(applicationContext, identifier))
-                        }
-                    }
                     "saveStickerPack" -> handleSaveStickerPack(call, result)
-                    "addStickerToPack" -> handleAddStickerToPack(call, result)
                     "deleteStickerPack" -> {
                         val identifier = call.argument<String>("identifier")
                         if (identifier == null) {
@@ -52,6 +43,18 @@ class MainActivity : FlutterActivity() {
                             result.success(true)
                         }
                     }
+                        "getProfile" -> {
+                            result.success(ProfileRepository.getProfile(applicationContext).toString())
+                        }
+                        "saveProfile" -> {
+                            val name = call.argument<String>("name")
+                            val avatarBytes = call.argument<ByteArray>("avatarBytes")
+                            val coverBytes = call.argument<ByteArray>("coverBytes")
+                            ProfileRepository.saveProfile(applicationContext, name, avatarBytes, coverBytes)
+                            result.success(true)
+                        }
+                        "getProfileAvatar" -> result.success(ProfileRepository.avatarBytes(applicationContext))
+                        "getProfileCover" -> result.success(ProfileRepository.coverBytes(applicationContext))
                     else -> result.notImplemented()
                 }
             }
@@ -112,19 +115,6 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             result.error("SAVE_ERROR", e.message, null)
-        }
-    }
-
-    private fun handleAddStickerToPack(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
-        try {
-            val identifier = call.argument<String>("identifier")!!
-            val stickerBytes = call.argument<ByteArray>("stickerBytes")!!
-            val emojis = call.argument<List<String>>("emojis") ?: listOf("😀")
-
-            StickerPackRepository.addStickerToPack(applicationContext, identifier, stickerBytes, emojis)
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("ADD_STICKER_ERROR", e.message, e.stackTraceToString())
         }
     }
 

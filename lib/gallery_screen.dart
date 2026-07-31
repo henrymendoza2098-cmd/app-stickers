@@ -2,10 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'create_pack_screen.dart';
 import 'page_transitions.dart';
-import 'profile_screen.dart';
 
 class GalleryScreen extends StatefulWidget {
   const GalleryScreen({super.key});
@@ -18,7 +16,6 @@ class GalleryScreenState extends State<GalleryScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   List<Map<String, dynamic>> _packs = [];
   final Map<String, Uint8List> _trayCache = {};
-  final Map<String, List<Uint8List>> _previewStickersCache = {};
   bool _loading = true;
 
   @override
@@ -29,12 +26,6 @@ class GalleryScreenState extends State<GalleryScreen> {
 
   Future<void> loadPacks() async {
     setState(() => _loading = true);
-
-    if (kIsWeb) {
-      _loadMockPacksForWeb();
-      return;
-    }
-
     try {
       final jsonStr = await _channel.invokeMethod<String>('getStickerPacks');
       final List<dynamic> list = jsonDecode(jsonStr ?? '[]');
@@ -42,16 +33,9 @@ class GalleryScreenState extends State<GalleryScreen> {
 
       for (final pack in _packs) {
         final id = pack['identifier'] as String;
-        final isDynamic = pack['isDynamic'] as bool? ?? false;
-
         if (!_trayCache.containsKey(id)) {
           final bytes = await _channel.invokeMethod<Uint8List>('getPackTray', {'identifier': id});
           if (bytes != null) _trayCache[id] = bytes;
-        }
-        if (isDynamic && !_previewStickersCache.containsKey(id)) {
-          final stickerBytesList = await _channel.invokeMethod<List<dynamic>>('getFirstNStickersForPack', {'identifier': id, 'count': 4});
-          if (stickerBytesList != null)
-            _previewStickersCache[id] = stickerBytesList.cast<Uint8List>();
         }
       }
     } catch (e) {
@@ -61,32 +45,6 @@ class GalleryScreenState extends State<GalleryScreen> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  /// Carga paquetes de stickers falsos para pruebas en la web,
-  /// donde el MethodChannel no está disponible.
-  void _loadMockPacksForWeb() {
-    _packs = [
-      {
-        'identifier': 'web_pack_cats',
-        'name': 'Gatitos de Prueba (Web)',
-        'publisher': 'Gemini Web',
-        'stickerCount': 4,
-        'isDynamic': false,
-      },
-      {
-        'identifier': 'web_pack_dogs',
-        'name': 'Perritos de Prueba (Web)',
-        'publisher': 'Gemini Web',
-        'stickerCount': 3,
-        'isDynamic': true,
-      },
-    ];
-    // No hay previews de stickers en la web, se mostrará el icono por defecto.
-    _previewStickersCache.clear();
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) setState(() => _loading = false);
-    });
   }
 
   Future<void> _addToWhatsApp(String identifier, String name) async {
@@ -113,7 +71,6 @@ class GalleryScreenState extends State<GalleryScreen> {
   Future<void> _deletePack(String identifier) async {
     await _channel.invokeMethod('deleteStickerPack', {'identifier': identifier});
     _trayCache.remove(identifier);
-    _previewStickersCache.remove(identifier);
     loadPacks();
   }
 
@@ -160,9 +117,7 @@ class GalleryScreenState extends State<GalleryScreen> {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mis stickers'),
-      ),
+      appBar: AppBar(title: const Text('Mis stickers')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _packs.isEmpty
@@ -185,31 +140,42 @@ class GalleryScreenState extends State<GalleryScreen> {
                 )
               : RefreshIndicator(
                   onRefresh: loadPacks,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
+                  child: GridView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 14,
+                      mainAxisSpacing: 14,
+                      childAspectRatio: 0.78,
+                    ),
                     itemCount: _packs.length,
-                    separatorBuilder: (context, index) => const SizedBox(height: 16),
                     itemBuilder: (context, index) {
                       final pack = _packs[index];
                       final identifier = pack['identifier'] as String;
                       final name = pack['name'] as String;
                       final publisher = pack['publisher'] as String? ?? '';
                       final isDynamic = pack['isDynamic'] as bool? ?? false;
-                      final previewStickers = kIsWeb ? null : _previewStickersCache[identifier];
+                      final trayBytes = _trayCache[identifier];
 
-                      return InkWell(
-                        onTap: () => _openPack(identifier, name, publisher, isDynamic),
-                        borderRadius: BorderRadius.circular(20),
-                        child: Card(
-                          clipBehavior: Clip.antiAlias,
+                      return Card(
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: () => _openPack(identifier, name, publisher, isDynamic),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              SizedBox(
-                                height: 140,
-                                child: _StickerPreviewGrid(
-                                  previewStickers: previewStickers,
-                                  child: Stack(children: [
+                              Expanded(
+                                child: Stack(
+                                  children: [
+                                    Container(
+                                      width: double.infinity,
+                                      color: colorScheme.primary.withValues(alpha: 0.08),
+                                      padding: const EdgeInsets.all(18),
+                                      child: trayBytes != null
+                                          ? Image.memory(trayBytes, fit: BoxFit.contain)
+                                          : Icon(Icons.image_rounded,
+                                              size: 36, color: colorScheme.primary.withValues(alpha: 0.35)),
+                                    ),
                                     Positioned(
                                       top: 4,
                                       right: 4,
@@ -217,8 +183,8 @@ class GalleryScreenState extends State<GalleryScreen> {
                                         onSend: () => _addToWhatsApp(identifier, name),
                                         onDelete: isDynamic ? () => _confirmDelete(identifier, name) : null,
                                       ),
-                                    )
-                                  ]),
+                                    ),
+                                  ],
                                 ),
                               ),
                               Padding(
@@ -226,21 +192,11 @@ class GalleryScreenState extends State<GalleryScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            name,
-                                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        if (isDynamic) ...[
-                                          const SizedBox(width: 4),
-                                          Icon(Icons.lock, size: 12, color: Colors.grey.shade600),
-                                        ],
-                                      ],
+                                    Text(
+                                      name,
+                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
                                     if (publisher.isNotEmpty)
                                       Text(
@@ -269,7 +225,7 @@ class GalleryScreenState extends State<GalleryScreen> {
                                 ),
                               ),
                             ],
-                          ), // Column
+                          ),
                         ),
                       );
                     },
@@ -336,60 +292,6 @@ class GalleryScreenState extends State<GalleryScreen> {
             const SizedBox(height: 12),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Grid de preview para los stickers en la tarjeta del pack.
-class _StickerPreviewGrid extends StatelessWidget {
-  final List<Uint8List>? previewStickers;
-  final Widget? child;
-
-  const _StickerPreviewGrid({this.previewStickers, this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Container(
-      width: double.infinity,
-      color: colorScheme.primary.withOpacity(0.08),
-      padding: const EdgeInsets.all(8),
-      child: Stack(
-        children: [
-          if (previewStickers == null || previewStickers!.isEmpty)
-            Center(
-              child: Icon(
-                Icons.image_rounded,
-                size: 36,
-                color: colorScheme.primary.withOpacity(0.35),
-              ),
-            )
-          else
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: List.generate(
-                previewStickers!.length > 4 ? 4 : previewStickers!.length,
-                (index) {
-                  return Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          color: Colors.white.withOpacity(0.5),
-                          child: Image.memory(previewStickers![index], fit: BoxFit.contain),
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          if (child != null)
-            Positioned.fill(child: child!),
-        ],
       ),
     );
   }
