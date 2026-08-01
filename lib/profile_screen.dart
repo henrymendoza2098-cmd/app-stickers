@@ -6,6 +6,7 @@ import 'mock_data.dart';
 import 'create_pack_screen.dart';
 import 'crop_screen.dart';
 import 'pack_preview_screen.dart';
+import 'gallery_screen.dart';
 import 'edit_profile_screen.dart';
 import 'page_transitions.dart';
 
@@ -17,7 +18,7 @@ import 'page_transitions.dart';
 ///   solo con los packs marcados como públicos, sin accesos de edición.
 class ProfileScreen extends StatefulWidget {
   final String profileId;
-  const ProfileScreen({super.key, required this.profileId});
+  const ProfileScreen({super.key, required this.profileId, required String userId});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -78,7 +79,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final id = pack['identifier'] as String;
         if (!_realPreviewCache.containsKey(id)) {
           try {
-            final stickers = await _channel.invokeListMethod<Uint8List>('getStickersForPack', {'identifier': id});
+            final stickers = await _channel.invokeListMethod<Uint8List>('getFirstNStickersForPack', {'identifier': id, 'count': 4});
             if (stickers != null) _realPreviewCache[id] = stickers.take(4).toList();
           } catch (_) {}
         }
@@ -131,17 +132,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
-  void _openVisitorPack(MockPack pack) {
+  void _openVisitorPack(MockPack pack, String publisherName) {
     Navigator.push(
       context,
-      slideUpRoute(PackPreviewScreen(mockPack: pack, displayName: pack.name)),
+      slideUpRoute(PackPreviewScreen(mockPack: pack, packName: pack.name, publisherName: publisherName)),
     );
   }
 
   void _openDemoVisitorProfile() {
     Navigator.push(
       context,
-      slideUpRoute(ProfileScreen(profileId: demoVisitorProfile.id)),
+      slideUpRoute(ProfileScreen(profileId: demoVisitorProfile.id, userId: currentUserId)),
     );
   }
 
@@ -324,7 +325,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           delegate: SliverChildBuilderDelegate(
             (context, index) {
               final pack = publicPacks[index];
-              return _MockPackCard(pack: pack, onTap: () => _openVisitorPack(pack));
+              return _MockPackCard(pack: pack, onTap: () => _openVisitorPack(pack, profile.name));
             },
             childCount: publicPacks.length,
           ),
@@ -587,22 +588,7 @@ class _RealPackCard extends StatelessWidget {
       title: pack['name'] as String,
       subtitle: '${pack['stickerCount']} stickers',
       showLock: true,
-      preview: previewStickers.isEmpty
-          ? const Icon(Icons.image_rounded, size: 32, color: Colors.grey)
-          : previewStickers.length == 1
-              ? Image.memory(previewStickers.first, fit: BoxFit.contain)
-              : GridView.count(
-                  crossAxisCount: 2,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 4,
-                  crossAxisSpacing: 4,
-                  children: List.generate(
-                    4,
-                    (i) => i < previewStickers.length
-                        ? Image.memory(previewStickers[i], fit: BoxFit.contain)
-                        : const SizedBox.shrink(),
-                  ),
-                ),
+      preview: StickerPreviewGrid(previewStickers: previewStickers),
     );
   }
 }

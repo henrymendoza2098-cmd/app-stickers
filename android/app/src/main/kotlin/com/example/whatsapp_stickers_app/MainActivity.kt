@@ -34,6 +34,18 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "saveStickerPack" -> handleSaveStickerPack(call, result)
+                    "getStickersForPack" -> {
+                        val identifier = call.argument<String>("identifier")!!
+                        result.success(StickerPackRepository.getStickersForPack(applicationContext, identifier))
+                    }
+                    "getFirstNStickersForPack" -> {
+                        val identifier = call.argument<String>("identifier")!!
+                        val count = call.argument<Int>("count")!!
+                        result.success(StickerPackRepository.getFirstNStickersForPack(applicationContext, identifier, count))
+                    }
+                    "addStickerToPack" -> {
+                        handleAddStickerToPack(call, result)
+                    }
                     "deleteStickerPack" -> {
                         val identifier = call.argument<String>("identifier")
                         if (identifier == null) {
@@ -117,6 +129,23 @@ class MainActivity : FlutterActivity() {
             result.error("SAVE_ERROR", e.message, null)
         }
     }
+
+    private fun handleAddStickerToPack(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        try {
+            val identifier = call.argument<String>("identifier")!!
+            val stickerBytes = call.argument<ByteArray>("stickerBytes")!!
+            @Suppress("UNCHECKED_CAST")
+            val emojis = call.argument<List<String>>("emojis")!!
+
+            StickerPackRepository.addStickerToPack(applicationContext, identifier, stickerBytes, emojis)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("ADD_STICKER_ERROR", e.message, e.stackTraceToString())
+        }
+    }
+
+
+
 
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

@@ -13,13 +13,15 @@ import 'mock_data.dart';
 class PackPreviewScreen extends StatefulWidget {
   final String? realIdentifier;
   final MockPack? mockPack;
-  final String displayName;
+  final String packName;
+  final String? publisherName;
 
   const PackPreviewScreen({
     super.key,
     this.realIdentifier,
     this.mockPack,
-    required this.displayName,
+    required this.packName,
+    this.publisherName,
   });
 
   @override
@@ -64,8 +66,8 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
     }
     try {
       final result = await _channel.invokeMethod<String>('addStickerPack', {
-        'identifier': widget.realIdentifier,
-        'name': widget.displayName,
+        'identifier': widget.realIdentifier!,
+        'name': widget.packName,
       });
       final mensaje = switch (result) {
         'added' => 'Pack añadido ✅',
@@ -83,75 +85,138 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     final mock = widget.mockPack;
 
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.displayName)),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  child: _isMock
-                      ? _MockStickerGrid(mock: mock!)
-                      : _stickers.isEmpty
-                          ? const Center(child: Text('Este pack no tiene stickers'))
-                          : GridView.builder(
-                              padding: const EdgeInsets.all(16),
-                              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 3,
-                                crossAxisSpacing: 10,
-                                mainAxisSpacing: 10,
-                              ),
-                              itemCount: _stickers.length,
-                              itemBuilder: (context, index) => Container(
-                                decoration: BoxDecoration(
-                                  color: colorScheme.primary.withValues(alpha: 0.06),
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                padding: const EdgeInsets.all(6),
-                                child: Image.memory(_stickers[index], fit: BoxFit.contain),
-                              ),
-                            ),
-                ),
-                SafeArea(
-                  top: false,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _download,
-                        icon: const Icon(Icons.download_rounded),
-                        label: const Text('Añadir a mi WhatsApp'),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+    return DefaultTabController(
+      length: 1,
+      child: Scaffold(
+        body: NestedScrollView(
+          headerSliverBuilder: (context, innerBoxIsScrolled) => [
+            SliverAppBar(
+              title: Text(widget.packName),
+              pinned: true,
+              floating: true,
             ),
+            SliverToBoxAdapter(
+              child: _PackHeader(
+                packName: widget.packName,
+                publisherName: widget.publisherName,
+                onAdd: _download,
+              ),
+            ),
+          ],
+          body: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _isMock
+                  ? _MockStickerList(mock: mock!)
+                  : _stickers.isEmpty
+                      ? const Center(child: Text('Este pack no tiene stickers'))
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          itemCount: _stickers.length,
+                          itemBuilder: (context, index) {
+                            return _StickerListTile(
+                              stickerBytes: _stickers[index],
+                              // TODO: Cuando guardemos emojis por sticker, pasarlos aquí
+                              emojis: const ['😀'],
+                            );
+                          },
+                        ),
+        ),
+      ),
     );
   }
 }
 
-class _MockStickerGrid extends StatelessWidget {
-  final MockPack mock;
-  const _MockStickerGrid({required this.mock});
+class _PackHeader extends StatelessWidget {
+  final String packName;
+  final String? publisherName;
+  final VoidCallback onAdd;
+
+  const _PackHeader({required this.packName, this.publisherName, required this.onAdd});
 
   @override
   Widget build(BuildContext context) {
-    return GridView.builder(
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(packName, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                if (publisherName != null && publisherName!.isNotEmpty)
+                  Text('de $publisherName', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_circle_outline_rounded, size: 20),
+            label: const Text('Añadir'),
+            style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 16)),
+          ),
+        ],
       ),
-      itemCount: mock.stickerCount,
-      itemBuilder: (context, index) => Container(
-        decoration: BoxDecoration(
-          color: mock.previewColor.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(14),
+    );
+  }
+}
+
+class _StickerListTile extends StatelessWidget {
+  final Uint8List stickerBytes;
+  final List<String> emojis;
+
+  const _StickerListTile({required this.stickerBytes, required this.emojis});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 72,
+              height: 72,
+              child: Image.memory(stickerBytes, fit: BoxFit.contain),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                emojis.join(' '),
+                style: const TextStyle(fontSize: 22),
+              ),
+            ),
+          ],
         ),
-        child: Icon(mock.previewIcon, color: mock.previewColor, size: 28),
+      ),
+    );
+  }
+}
+
+class _MockStickerList extends StatelessWidget {
+  final MockPack mock;
+  const _MockStickerList({required this.mock});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      itemCount: mock.stickerCount,
+      itemBuilder: (context, index) => Card(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Row(
+            children: [
+              SizedBox(
+                  width: 72, height: 72, child: Icon(mock.previewIcon, color: mock.previewColor, size: 40)),
+              const SizedBox(width: 16),
+              const Expanded(child: Text('✨', style: TextStyle(fontSize: 22))),
+            ],
+          ),
+        ),
       ),
     );
   }

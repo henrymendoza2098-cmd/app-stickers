@@ -55,7 +55,7 @@ class _MainScreenState extends State<MainScreen> {
     super.initState();
     _widgetOptions = <Widget>[
       GalleryScreen(key: _galleryKey),
-      const ProfileScreen(profileId: currentUserId),
+      const ProfileScreen(profileId: currentUserId, userId: currentUserId),
     ];
   }
 

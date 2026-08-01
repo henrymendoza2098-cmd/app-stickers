@@ -162,6 +162,69 @@ object StickerPackRepository {
         File(packsDir(context), identifier).deleteRecursively()
     }
 
+    fun addStickerToPack(context: Context, identifier: String, stickerPng: ByteArray, emojis: List<String>) {
+        val packDir = File(packsDir(context), identifier)
+        if (!packDir.exists()) throw Exception("El pack no existe")
+
+        val index = loadDynamicIndex(context)
+        var packJson: JSONObject? = null
+        val newIndex = JSONArray()
+        for (i in 0 until index.length()) {
+            val p = index.getJSONObject(i)
+            if (p.getString("identifier") == identifier) {
+                packJson = p
+            } else {
+                newIndex.put(p)
+            }
+        }
+        if (packJson == null) throw Exception("Pack no encontrado en el índice")
+
+        val stickerEntries = packJson.getJSONArray("stickers")
+        val newStickerIndex = stickerEntries.length() + 1
+
+        val bitmap = BitmapFactory.decodeByteArray(stickerPng, 0, stickerPng.size)
+        val resized = Bitmap.createScaledBitmap(bitmap, 512, 512, true)
+        val fileName = "sticker_${newStickerIndex}.webp"
+        FileOutputStream(File(packDir, fileName)).use { out ->
+            @Suppress("DEPRECATION")
+            resized.compress(Bitmap.CompressFormat.WEBP, 90, out)
+        }
+
+        val newStickerJson = JSONObject()
+        newStickerJson.put("image_file", fileName)
+        newStickerJson.put("emojis", JSONArray(emojis))
+        stickerEntries.put(newStickerJson)
+
+        packJson.put("stickers", stickerEntries)
+        newIndex.put(packJson)
+        saveDynamicIndex(context, newIndex)
+    }
+
+    fun getStickersForPack(context: Context, identifier: String): List<ByteArray> {
+        val packDir = File(packsDir(context), identifier)
+        if (!packDir.exists()) return emptyList()
+
+        val pack = getAllPacks(context).find { it.identifier == identifier } ?: return emptyList()
+
+        return pack.stickers.mapNotNull { sticker ->
+            try {
+                File(packDir, sticker.imageFileName).readBytes()
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    fun getFirstNStickersForPack(context: Context, identifier: String, n: Int): List<ByteArray> {
+        val packDir = File(packsDir(context), identifier)
+        if (!packDir.exists()) return emptyList()
+
+        val pack = getAllPacks(context).find { it.identifier == identifier } ?: return emptyList()
+
+        return pack.stickers.take(n).mapNotNull { sticker ->
+            try { File(packDir, sticker.imageFileName).readBytes() } catch (e: Exception) { null }
+        }
+    }
     /** Serializa la lista de packs a JSON para mandarla a Flutter */
     fun packsToJson(context: Context): String {
         val array = JSONArray()
