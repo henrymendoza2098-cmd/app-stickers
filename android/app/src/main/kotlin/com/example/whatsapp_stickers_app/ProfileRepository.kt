@@ -30,10 +30,15 @@ object ProfileRepository {
         val json: JSONObject
         if (file.exists()) {
             json = JSONObject(file.readText())
+            if (!json.has("bio")) {
+                json.put("bio", "")
+                file.writeText(json.toString())
+            }
         } else {
             json = JSONObject()
             json.put("name", "")
             json.put("username", generateUsername())
+            json.put("bio", "")
             file.writeText(json.toString())
         }
         json.put("hasAvatar", File(context.filesDir, AVATAR_FILE_NAME).exists())
@@ -41,9 +46,10 @@ object ProfileRepository {
         return json
     }
 
-    fun saveProfile(context: Context, name: String?, avatarBytes: ByteArray?, coverBytes: ByteArray?) {
+    fun saveProfile(context: Context, name: String?, bio: String?, avatarBytes: ByteArray?, coverBytes: ByteArray?) {
         val current = getProfile(context)
         if (name != null) current.put("name", name)
+        if (bio != null) current.put("bio", bio)
         current.remove("hasAvatar")
         current.remove("hasCover")
         profileFile(context).writeText(current.toString())

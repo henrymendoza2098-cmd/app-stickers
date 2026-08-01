@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'crop_screen.dart';
+import 'favorites_repository.dart';
 import 'page_transitions.dart';
 
 class CreatePackScreen extends StatefulWidget {
@@ -28,6 +29,7 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   final _nameController = TextEditingController();
   final _publisherController = TextEditingController();
+  final _favoritesRepo = FavoritesRepository();
   final List<Uint8List> _stickers = [];
   bool _saving = false;
   String _status = '';
@@ -123,12 +125,79 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
     }
   }
 
+  Future<void> _deletePack() async {
+    if (widget.identifier == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('¿Eliminar pack?'),
+        content: Text('Se eliminará "${_nameController.text}" y todos sus stickers. Esta acción no se puede deshacer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, true); // Confirm delete
+            },
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        setState(() => _saving = true); // Show loading indicator on save button
+        await _favoritesRepo.removeFavorite(widget.identifier!);
+        await _channel.invokeMethod('deleteStickerPack', {'identifier': widget.identifier!});
+        // Pop the edit screen and signal a refresh to the screen below (pack_preview)
+        if (mounted) Navigator.pop(context, true);
+      } on PlatformException catch (e) {
+        if (mounted) {
+          setState(() => _status = 'Error al eliminar: ${e.message}');
+        }
+      } finally {
+        if (mounted) setState(() => _saving = false);
+      }
+    }
+  }
+
+  void _togglePrivate() {
+    // TODO: Implementar la lógica para hacer un pack privado
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Función de pack privado (próximamente)')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.isEditing ? 'Editar pack' : 'Crear nuevo pack')),
+      appBar: AppBar(
+        title: Text(widget.isEditing ? 'Editar pack' : 'Crear nuevo pack'),
+        actions: [
+          if (widget.isEditing)
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                switch (value) {
+                  case 'delete':
+                    _deletePack();
+                    break;
+                  case 'private':
+                    _togglePrivate();
+                    break;
+                }
+              },
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                const PopupMenuItem<String>(value: 'private', child: Text('Hacer privado')),
+                const PopupMenuDivider(),
+                const PopupMenuItem<String>(
+                    value: 'delete', child: Text('Eliminar pack', style: TextStyle(color: Colors.red))),
+              ],
+            ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(

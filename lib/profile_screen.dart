@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'favorites_repository.dart';
 import 'mock_data.dart';
 import 'create_pack_screen.dart';
 import 'crop_screen.dart';
@@ -32,14 +33,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
   // --- Perfil real (nombre, username, fotos) — solo modo dueño ---
   String _realName = '';
   String _realUsername = '';
+  String _realBio = '';
   Uint8List? _realAvatar;
   Uint8List? _realCover;
   bool _loadingProfile = true;
 
   // --- Packs reales — solo modo dueño ---
   List<Map<String, dynamic>> _realPacks = [];
+  List<Map<String, dynamic>> _privatePacks = [];
   final Map<String, List<Uint8List>> _realPreviewCache = {};
   bool _loadingPacks = true;
+
+  // --- Favoritos ---
+  final _favoritesRepo = FavoritesRepository();
+  List<Map<String, dynamic>> _favoritePacks = [];
+  bool _loadingFavorites = true;
 
   int _profileTab = 0; // 0 = Mis stickers, 1 = Favoritos, 2 = Privados
 
@@ -49,6 +57,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (_isOwner) {
       _loadProfile();
       _loadRealPacks();
+      _loadFavorites();
     }
   }
 
@@ -59,6 +68,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final Map<String, dynamic> data = jsonDecode(jsonStr ?? '{}');
       _realName = (data['name'] as String?) ?? '';
       _realUsername = (data['username'] as String?) ?? '';
+      _realBio = (data['bio'] as String?) ?? '';
       final hasAvatar = data['hasAvatar'] == true;
       final hasCover = data['hasCover'] == true;
       _realAvatar = hasAvatar ? await _channel.invokeMethod<Uint8List>('getProfileAvatar') : null;
@@ -73,9 +83,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final jsonStr = await _channel.invokeMethod<String>('getStickerPacks');
       final List<dynamic> list = jsonDecode(jsonStr ?? '[]');
-      _realPacks = list.cast<Map<String, dynamic>>().where((p) => p['isDynamic'] == true).toList();
+      final allUserPacks = list.cast<Map<String, dynamic>>().where((p) => p['isDynamic'] == true).toList();
 
-      for (final pack in _realPacks) {
+      _realPacks = allUserPacks.where((p) => p['isPrivate'] != true).toList();
+      _privatePacks = allUserPacks.where((p) => p['isPrivate'] == true).toList();
+
+      for (final pack in allUserPacks) {
         final id = pack['identifier'] as String;
         if (!_realPreviewCache.containsKey(id)) {
           try {
@@ -89,6 +102,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _loadFavorites() async {
+    if (!mounted) return;
+    setState(() => _loadingFavorites = true);
+    try {
+      _favoritePacks = await _favoritesRepo.getFavorites();
+      // Cargar también las vistas previas de los stickers para los packs dinámicos favoritos
+      for (final pack in _favoritePacks) {
+        final id = pack['identifier'] as String;
+        if (!_realPreviewCache.containsKey(id) && (pack['isDynamic'] as bool? ?? false)) {
+          try {
+            final stickers = await _channel.invokeListMethod<Uint8List>('getFirstNStickersForPack', {'identifier': id, 'count': 4});
+            if (stickers != null) _realPreviewCache[id] = stickers.take(4).toList();
+          } catch (_) {
+            // En escritorio, esto fallará. La tarjeta mostrará un placeholder, lo cual está bien.
+          }
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _loadingFavorites = false);
+    }
+  }
+
   Future<void> _openEditProfile() async {
     final updated = await Navigator.push<bool>(
       context,
@@ -96,12 +131,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
         EditProfileScreen(
           currentName: _realName,
           username: _realUsername,
+          currentBio: _realBio,
           currentAvatar: _realAvatar,
           currentCover: _realCover,
         ),
       ),
     );
-    if (updated == true) _loadProfile();
+    if (updated == true) {
+      _loadProfile();
+      _loadFavorites(); // Nombres/etc. de packs favoritos pueden haber cambiado
+    }
   }
 
   Future<void> _createNewPack() async {
@@ -118,24 +157,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context,
       slideUpRoute(CreatePackScreen(initialStickers: [cropped])),
     );
-    if (created == true) _loadRealPacks();
+    if (created == true) {
+      _loadRealPacks();
+      _loadFavorites();
+    }
   }
 
-  void _openOwnedPack(String identifier, String name, String publisher) {
+  void _openOwnedPack(Map<String, dynamic> pack) {
+    final identifier = pack['identifier'] as String;
+    final name = pack['name'] as String;
+    final publisher = pack['publisher'] as String? ?? '';
+    final stickerCount = pack['stickerCount'] as int? ?? 0;
+    final isPrivate = pack['isPrivate'] as bool? ?? false;
+
     Navigator.push<bool>(
       context,
       slideUpRoute(
-        CreatePackScreen(packName: name, publisher: publisher, identifier: identifier, isEditing: true),
+        PackPreviewScreen(
+            realIdentifier: identifier,
+            packName: name,
+            publisherName: publisher,
+            stickerCount: stickerCount,
+            publisherId: currentUserId, // Es un pack propio
+            isPrivate: isPrivate),
       ),
-    ).then((updated) {
-      if (updated == true) _loadRealPacks();
+    ).then((refreshed) {
+      if (refreshed == true) {
+        _loadRealPacks();
+        _loadFavorites();
+      }
     });
   }
 
-  void _openVisitorPack(MockPack pack, String publisherName) {
+  void _openVisitorPack(MockPack pack, MockProfile profile) {
     Navigator.push(
       context,
-      slideUpRoute(PackPreviewScreen(mockPack: pack, packName: pack.name, publisherName: publisherName)),
+      slideUpRoute(PackPreviewScreen(
+        mockPack: pack,
+        packName: pack.name,
+        publisherName: profile.name,
+        publisherId: profile.id,
+        stickerCount: pack.stickerCount,
+      )),
     );
   }
 
@@ -167,7 +230,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             expandedHeight: 0,
             backgroundColor: Theme.of(context).scaffoldBackgroundColor,
             elevation: 0,
-            automaticallyImplyLeading: !_isOwner,
             actions: [
               if (_isOwner)
                 IconButton(
@@ -185,7 +247,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ? _ProfileHeader(
                     name: _realName.isEmpty ? _realUsername : _realName,
                     handle: '@$_realUsername',
-                    bio: '',
+                    bio: _realBio,
                     verified: false,
                     followers: 0,
                     avatarBytes: _realAvatar,
@@ -241,11 +303,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   List<Widget> _buildOwnerBodySlivers(ColorScheme colorScheme) {
     if (_profileTab == 1) {
-      return [const _PlaceholderTabSliver(icon: Icons.favorite_border_rounded, title: 'Favoritos')];
+      return _buildFavoritePacksSlivers(colorScheme);
     }
-    if (_profileTab == 2) {
-      return [const _PlaceholderTabSliver(icon: Icons.lock_outline_rounded, title: 'Paquetes privados')];
-    }
+    if (_profileTab == 2) return _buildPrivatePacksSlivers(colorScheme);
     return _buildOwnerPacksSlivers(colorScheme);
   }
 
@@ -290,10 +350,127 @@ class _ProfileScreenState extends State<ProfileScreen> {
               return _RealPackCard(
                 pack: pack,
                 previewStickers: _realPreviewCache[identifier] ?? const [],
-                onTap: () => _openOwnedPack(identifier, pack['name'] as String, pack['publisher'] as String? ?? ''),
+                onTap: () => _openOwnedPack(pack),
               );
             },
             childCount: _realPacks.length,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _buildPrivatePacksSlivers(ColorScheme colorScheme) {
+    if (_loadingPacks) {
+      return [
+        const SliverToBoxAdapter(
+          child: Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
+        ),
+      ];
+    }
+    if (_privatePacks.isEmpty) {
+      return [
+        const _PlaceholderTabSliver(
+          icon: Icons.lock_outline_rounded,
+          title: 'Sin packs privados',
+          subtitle: 'Los packs que marques como privados aparecerán aquí.',
+        )
+      ];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 14,
+            mainAxisSpacing: 14,
+            childAspectRatio: 0.78,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              final pack = _privatePacks[index];
+              return _RealPackCard(
+                pack: pack,
+                previewStickers: _realPreviewCache[pack['identifier'] as String] ?? const [],
+                onTap: () => _openOwnedPack(pack),
+              );
+            },
+            childCount: _privatePacks.length,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _buildFavoritePacksSlivers(ColorScheme colorScheme) {
+    if (_loadingFavorites) {
+      return [
+        const SliverToBoxAdapter(
+          child: Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())),
+        ),
+      ];
+    }
+    if (_favoritePacks.isEmpty) {
+      return [
+        const _PlaceholderTabSliver(
+          icon: Icons.favorite_border_rounded,
+          title: 'Sin favoritos',
+          subtitle: 'Tus packs favoritos aparecerán aquí.',
+        )
+      ];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 14,
+            mainAxisSpacing: 14,
+            childAspectRatio: 0.78,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              final pack = _favoritePacks[index];
+              final identifier = pack['identifier'] as String;
+              final isDynamic = pack['isDynamic'] as bool? ?? false;
+              return _RealPackCard(
+                pack: pack,
+                previewStickers: _realPreviewCache[identifier] ?? const [],
+                onTap: () {
+                  if (isDynamic) {
+                    _openOwnedPack(pack);
+                  } else {
+                    // Para packs favoritos que no son dinámicos (p. ej. el de demo),
+                    // intentamos ver si el creador es el usuario actual para poder navegar a su perfil.
+                    // Es una heurística simple; un sistema real guardaría el ID del creador.
+                    final publisher = pack['publisher'] as String? ?? '';
+                    final publisherId = (publisher.isNotEmpty && publisher == _realName) || (publisher.isEmpty)
+                        ? currentUserId
+                        : null;
+                    final isPrivate = pack['isPrivate'] as bool? ?? false;
+
+                    Navigator.push<bool>(
+                      context,
+                      slideUpRoute(PackPreviewScreen(
+                          realIdentifier: identifier,
+                          packName: pack['name'] as String,
+                          publisherName: publisher,
+                          stickerCount: pack['stickerCount'] as int? ?? 0,
+                          publisherId: publisherId,
+                          isPrivate: isPrivate)),
+                    ).then((refreshed) {
+                      if (refreshed == true) {
+                        _loadRealPacks();
+                        _loadFavorites();
+                      }
+                    });
+                  }
+                },
+              );
+            },
+            childCount: _favoritePacks.length,
           ),
         ),
       ),
@@ -325,7 +502,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           delegate: SliverChildBuilderDelegate(
             (context, index) {
               final pack = publicPacks[index];
-              return _MockPackCard(pack: pack, onTap: () => _openVisitorPack(pack, profile.name));
+              return _MockPackCard(pack: pack, onTap: () => _openVisitorPack(pack, profile));
             },
             childCount: publicPacks.length,
           ),
@@ -390,7 +567,8 @@ class _ProfileTabs extends StatelessWidget {
 class _PlaceholderTabSliver extends StatelessWidget {
   final IconData icon;
   final String title;
-  const _PlaceholderTabSliver({required this.icon, required this.title});
+  final String? subtitle;
+  const _PlaceholderTabSliver({required this.icon, required this.title, this.subtitle});
 
   @override
   Widget build(BuildContext context) {
@@ -404,7 +582,7 @@ class _PlaceholderTabSliver extends StatelessWidget {
             const SizedBox(height: 12),
             Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('Próximamente', style: TextStyle(color: Colors.grey)),
+            Text(subtitle ?? 'Próximamente', style: const TextStyle(color: Colors.grey)),
           ],
         ),
       ),

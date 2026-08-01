@@ -2,11 +2,13 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'create_pack_screen.dart';
+import 'favorites_repository.dart';
 import 'page_transitions.dart';
 import 'profile_screen.dart';
 import 'pack_preview_screen.dart';
+import 'mock_data.dart';
 
 class GalleryScreen extends StatefulWidget {
   const GalleryScreen({super.key});
@@ -22,17 +24,98 @@ class GalleryScreenState extends State<GalleryScreen> {
   final Map<String, List<Uint8List>> _previewStickersCache = {};
   bool _loading = true;
 
+  final _favoritesRepo = FavoritesRepository();
+  List<String> _favoritePackIds = [];
+
+  final _searchController = TextEditingController();
+  List<Map<String, dynamic>> _filteredPacks = [];
+
   @override
   void initState() {
     super.initState();
     loadPacks();
+    _loadFavorites();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadFavorites() async {
+    final favs = await _favoritesRepo.getFavorites();
+    if (!mounted) return;
+    setState(() {
+      _favoritePackIds = favs.map((p) => p['identifier'] as String).toList();
+    });
+  }
+
+  Future<void> _toggleFavorite(Map<String, dynamic> pack) async {
+    final identifier = pack['identifier'] as String;
+    if (_favoritePackIds.contains(identifier)) {
+      await _favoritesRepo.removeFavorite(identifier);
+    } else {
+      await _favoritesRepo.addFavorite(pack);
+    }
+    await _loadFavorites();
+  }
+
+  Future<void> _togglePrivacy(String identifier, bool isCurrentlyPrivate) async {
+    try {
+      await _channel.invokeMethod('togglePackPrivacy', {
+        'identifier': identifier,
+        'isPrivate': !isCurrentlyPrivate,
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(isCurrentlyPrivate ? 'Pack hecho público' : 'Pack hecho privado')),
+        );
+      }
+      await loadPacks();
+      await _loadFavorites();
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.message}')));
+      }
+    }
+  }
+
+  void _editPack(Map<String, dynamic> pack) {
+    final identifier = pack['identifier'] as String;
+    final name = pack['name'] as String;
+    final publisher = pack['publisher'] as String? ?? '';
+    Navigator.push<bool>(
+      context,
+      slideUpRoute(CreatePackScreen(packName: name, publisher: publisher, identifier: identifier, isEditing: true)),
+    ).then((updated) => {if (updated == true) loadPacks()});
+  }
+
+  void _onSearchChanged() {
+    if (!mounted) return;
+    setState(() {
+      _updateFilteredPacks();
+    });
+  }
+
+  void _updateFilteredPacks() {
+    final query = _searchController.text.toLowerCase();
+    _filteredPacks = _packs.where((pack) {
+      final name = (pack['name'] as String? ?? '').toLowerCase();
+      final isPrivate = pack['isPrivate'] as bool? ?? false;
+      return name.contains(query) && !isPrivate;
+    }).toList();
   }
 
   Future<void> loadPacks() async {
     setState(() => _loading = true);
 
-    if (kIsWeb) {
-      _loadMockPacksForWeb();
+    // Usar datos de prueba en plataformas de escritorio para facilitar el desarrollo
+    final isMobile = !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
+
+    if (!isMobile) {
+      _loadMockPacksForDesktop();
       return;
     }
 
@@ -60,33 +143,49 @@ class GalleryScreenState extends State<GalleryScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error cargando packs: $e')));
       }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _updateFilteredPacks();
+        });
+      }
     }
   }
 
-  /// Carga paquetes de stickers falsos para pruebas en la web,
-  /// donde el MethodChannel no está disponible.
-  void _loadMockPacksForWeb() {
+  /// Carga paquetes de stickers falsos para pruebas en escritorio/web.
+  void _loadMockPacksForDesktop() {
     _packs = [
       {
-        'identifier': 'web_pack_cats',
-        'name': 'Gatitos de Prueba (Web)',
-        'publisher': 'Gemini Web',
-        'stickerCount': 4,
-        'isDynamic': false,
+        'identifier': 'desktop_pack_memes',
+        'name': 'Memes para PC',
+        'publisher': 'Usuario de Desktop',
+        'stickerCount': 12,
+        'isDynamic': true,
       },
       {
-        'identifier': 'web_pack_dogs',
-        'name': 'Perritos de Prueba (Web)',
-        'publisher': 'Gemini Web',
-        'stickerCount': 3,
+        'identifier': 'desktop_pack_code',
+        'name': 'Stickers de Programación',
+        'publisher': 'Gemini',
+        'stickerCount': 20,
         'isDynamic': true,
+      },
+      {
+        'identifier': 'desktop_pack_dogs',
+        'name': 'Perritos para alegrar el día',
+        'publisher': 'Amante de los animales',
+        'stickerCount': 8,
+        'isDynamic': false,
       },
     ];
     // No hay previews de stickers en la web, se mostrará el icono por defecto.
     _previewStickersCache.clear();
     Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _updateFilteredPacks();
+        });
+      }
     });
   }
 
@@ -112,10 +211,12 @@ class GalleryScreenState extends State<GalleryScreen> {
   }
 
   Future<void> _deletePack(String identifier) async {
+    await _favoritesRepo.removeFavorite(identifier);
     await _channel.invokeMethod('deleteStickerPack', {'identifier': identifier});
     _trayCache.remove(identifier);
     _previewStickersCache.remove(identifier);
-    loadPacks();
+    await loadPacks();
+    await _loadFavorites();
   }
 
   void _confirmDelete(String identifier, String name) {
@@ -139,24 +240,35 @@ class GalleryScreenState extends State<GalleryScreen> {
     );
   }
 
-  void _openPack(String identifier, String name, String publisher, bool isDynamic) {
-    if (isDynamic) {
-      // Si es un pack del usuario, abre el editor
-      Navigator.push<bool>(
-        context,
-        slideUpRoute(
-          CreatePackScreen(packName: name, publisher: publisher, identifier: identifier, isEditing: true),
-        ),
-      ).then((updated) {
-        if (updated == true) loadPacks();
-      });
-    } else {
-      // Si es un pack de demostración, abre la vista previa
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => PackPreviewScreen(realIdentifier: identifier, packName: name, publisherName: publisher)),
-      );
-    }
+  void _openPack(Map<String, dynamic> pack) {
+    final identifier = pack['identifier'] as String;
+    final name = pack['name'] as String;
+    final publisher = pack['publisher'] as String? ?? '';
+    final isDynamic = pack['isDynamic'] as bool? ?? false;
+    final stickerCount = pack['stickerCount'] as int? ?? 0;
+    final isPrivate = pack['isPrivate'] as bool? ?? false;
+
+    // Si es un pack dinámico (creado por el usuario), le asignamos el ID del
+    // usuario actual para que la tarjeta de autor lleve a su perfil.
+    // Para packs de demo, el publisherId será null.
+    final publisherId = isDynamic ? currentUserId : null;
+
+    Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+          builder: (_) => PackPreviewScreen(
+              realIdentifier: identifier,
+              packName: name,
+              publisherName: publisher,
+              stickerCount: stickerCount,
+              publisherId: publisherId,
+              isPrivate: isPrivate)),
+    ).then((refreshed) {
+      if (refreshed == true) {
+        loadPacks();
+        _loadFavorites();
+      }
+    });
   }
 
   @override
@@ -168,10 +280,10 @@ class GalleryScreenState extends State<GalleryScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _buildGalleryBody(colorScheme),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: FloatingActionButton(
         onPressed: _showCreatePackSheet,
-        icon: const Icon(Icons.add),
-        label: const Text('Nuevo pack'),
+        tooltip: 'Agregar',
+        child: const Icon(Icons.add),
       ),
     );
   }
@@ -202,30 +314,78 @@ class GalleryScreenState extends State<GalleryScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Buscar packs por nombre...',
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24.0),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
           const _FilterBar(),
           Expanded(
-            child: ListView.separated(
-              padding: const EdgeInsets.only(top: 8, bottom: 120),
-              itemCount: _packs.length,
-              separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
-              itemBuilder: (context, index) {
-                final pack = _packs[index];
+            child: _filteredPacks.isEmpty && _searchController.text.isNotEmpty
+                ? _buildNoResults()
+                : ListView.separated(
+                    padding: const EdgeInsets.only(top: 8, bottom: 120),
+                    itemCount: _filteredPacks.length,
+                    separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
+                    itemBuilder: (context, index) {
+                final pack = _filteredPacks[index];
                 final identifier = pack['identifier'] as String;
                 final name = pack['name'] as String;
                 final publisher = pack['publisher'] as String? ?? '';
                 final isDynamic = pack['isDynamic'] as bool? ?? false;
                 final previewStickers = kIsWeb ? null : _previewStickersCache[identifier];
+                final isFavorite = _favoritePackIds.contains(identifier);
+                final isPrivate = pack['isPrivate'] as bool? ?? false;
 
                 return _PackRow(
                   pack: pack,
                   previewStickers: previewStickers,
-                  onTap: () => _openPack(identifier, name, publisher, isDynamic),
+                  onTap: () => _openPack(pack),
                   onAdd: () => _addToWhatsApp(identifier, name),
+                  isFavorite: isFavorite,
+                  onToggleFavorite: () => _toggleFavorite(pack),
+                  isDynamic: isDynamic,
+                  isPrivate: isPrivate,
+                  onEdit: () => _editPack(pack),
+                  onDelete: () => _confirmDelete(identifier, name),
+                  onTogglePrivate: () => _togglePrivacy(identifier, isPrivate),
                 );
               },
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildNoResults() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.search_off_rounded, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            Text(
+              'No se encontraron packs para "${_searchController.text}"',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -296,7 +456,7 @@ class _FilterBar extends StatefulWidget {
 }
 
 class _FilterBarState extends State<_FilterBar> {
-  final List<String> _filters = ['Todo', 'Creadores', 'Siguiendo', 'Amor', 'Memes', 'Alegría', 'Reacciones'];
+  final List<String> _filters = ['Todo', 'Perfiles', 'Siguiendo', 'Amor', 'Memes', 'Alegría', 'Reacciones'];
   String _selectedFilter = 'Todo';
 
   @override
@@ -340,12 +500,26 @@ class _PackRow extends StatelessWidget {
   final List<Uint8List>? previewStickers;
   final VoidCallback onTap;
   final VoidCallback onAdd;
+  final bool isFavorite;
+  final VoidCallback onToggleFavorite;
+  final bool isDynamic;
+  final bool isPrivate;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final VoidCallback onTogglePrivate;
 
   const _PackRow({
     required this.pack,
     this.previewStickers,
     required this.onTap,
     required this.onAdd,
+    required this.isFavorite,
+    required this.onToggleFavorite,
+    required this.isDynamic,
+    required this.isPrivate,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onTogglePrivate,
   });
 
   @override
@@ -374,10 +548,38 @@ class _PackRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                TextButton(
-                  onPressed: onAdd,
-                  child: const Text('Añadir'),
+                IconButton(
+                  icon: Icon(
+                    isFavorite ? Icons.favorite : Icons.favorite_border,
+                    color: isFavorite ? Colors.redAccent : Colors.grey,
+                  ),
+                  onPressed: onToggleFavorite,
+                  tooltip: 'Marcar como favorito',
                 ),
+                if (isDynamic)
+                  PopupMenuButton<String>(
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'edit':
+                          onEdit();
+                          break;
+                        case 'private':
+                          onTogglePrivate();
+                          break;
+                        case 'delete':
+                          onDelete();
+                          break;
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(value: 'edit', child: Text('Editar')),
+                      PopupMenuItem(value: 'private', child: Text(isPrivate ? 'Hacer público' : 'Hacer privado')),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(value: 'delete', child: Text('Eliminar', style: TextStyle(color: Colors.red))),
+                    ],
+                  )
+                else
+                  TextButton(onPressed: onAdd, child: const Text('Añadir')),
               ],
             ),
             const SizedBox(height: 12),

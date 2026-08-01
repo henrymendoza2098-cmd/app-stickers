@@ -225,8 +225,34 @@ object StickerPackRepository {
             try { File(packDir, sticker.imageFileName).readBytes() } catch (e: Exception) { null }
         }
     }
+
+    fun togglePackPrivacy(context: Context, identifier: String, isPrivate: Boolean) {
+        val index = loadDynamicIndex(context)
+        var packFound = false
+        for (i in 0 until index.length()) {
+            val p = index.getJSONObject(i)
+            if (p.getString("identifier") == identifier) {
+                p.put("isPrivate", isPrivate)
+                packFound = true
+                break
+            }
+        }
+        if (packFound) {
+            saveDynamicIndex(context, index)
+        } else {
+            throw Exception("Pack con identificador $identifier no encontrado en el índice.")
+        }
+    }
+
     /** Serializa la lista de packs a JSON para mandarla a Flutter */
     fun packsToJson(context: Context): String {
+        val dynamicIndex = loadDynamicIndex(context)
+        val dynamicPacksMap = mutableMapOf<String, JSONObject>()
+        for (i in 0 until dynamicIndex.length()) {
+            val p = dynamicIndex.getJSONObject(i)
+            dynamicPacksMap[p.getString("identifier")] = p
+        }
+
         val array = JSONArray()
         for (pack in getAllPacks(context)) {
             val obj = JSONObject()
@@ -234,7 +260,14 @@ object StickerPackRepository {
             obj.put("name", pack.name)
             obj.put("publisher", pack.publisher)
             obj.put("stickerCount", pack.stickers.size)
-            obj.put("isDynamic", isDynamicPack(pack.identifier))
+            val isDynamic = isDynamicPack(pack.identifier)
+            obj.put("isDynamic", isDynamic)
+            if (isDynamic) {
+                val packData = dynamicPacksMap[pack.identifier]
+                obj.put("isPrivate", packData?.optBoolean("isPrivate", false) ?: false)
+            } else {
+                obj.put("isPrivate", false) // El pack de demo nunca es privado
+            }
             array.put(obj)
         }
         return array.toString()

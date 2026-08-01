@@ -55,14 +55,29 @@ class MainActivity : FlutterActivity() {
                             result.success(true)
                         }
                     }
+                    "togglePackPrivacy" -> {
+                        val identifier = call.argument<String>("identifier")
+                        val isPrivate = call.argument<Boolean>("isPrivate")
+                        if (identifier == null || isPrivate == null) {
+                            result.error("MISSING_ARGS", "Faltan identifier o isPrivate", null)
+                        } else {
+                            try {
+                                StickerPackRepository.togglePackPrivacy(applicationContext, identifier, isPrivate)
+                                result.success(true)
+                            } catch (e: Exception) {
+                                result.error("PRIVACY_TOGGLE_ERROR", e.message, null)
+                            }
+                        }
+                    }
                         "getProfile" -> {
                             result.success(ProfileRepository.getProfile(applicationContext).toString())
                         }
                         "saveProfile" -> {
                             val name = call.argument<String>("name")
+                            val bio = call.argument<String>("bio")
                             val avatarBytes = call.argument<ByteArray>("avatarBytes")
                             val coverBytes = call.argument<ByteArray>("coverBytes")
-                            ProfileRepository.saveProfile(applicationContext, name, avatarBytes, coverBytes)
+                            ProfileRepository.saveProfile(this, name, bio, avatarBytes, coverBytes)
                             result.success(true)
                         }
                         "getProfileAvatar" -> result.success(ProfileRepository.avatarBytes(applicationContext))
