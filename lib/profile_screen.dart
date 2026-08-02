@@ -19,7 +19,7 @@ import 'page_transitions.dart';
 ///   solo con los packs marcados como públicos, sin accesos de edición.
 class ProfileScreen extends StatefulWidget {
   final String profileId;
-  const ProfileScreen({super.key, required this.profileId, required String userId});
+  const ProfileScreen({super.key, required this.profileId});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -131,7 +131,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         EditProfileScreen(
           currentName: _realName,
           username: _realUsername,
-          currentBio: _realBio,
           currentAvatar: _realAvatar,
           currentCover: _realCover,
         ),
@@ -205,7 +204,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _openDemoVisitorProfile() {
     Navigator.push(
       context,
-      slideUpRoute(ProfileScreen(profileId: demoVisitorProfile.id, userId: currentUserId)),
+      slideUpRoute(ProfileScreen(profileId: demoVisitorProfile.id)),
     );
   }
 

@@ -333,7 +333,7 @@ class _PublisherCard extends StatelessWidget {
         onTap: () {
           Navigator.push(
             context,
-            slideUpRoute(ProfileScreen(profileId: publisherId!, userId: currentUserId)),
+            slideUpRoute(ProfileScreen(profileId: publisherId!)),
           );
         },
         child: cardContent,

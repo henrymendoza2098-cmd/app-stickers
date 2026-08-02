@@ -9,8 +9,24 @@ import 'app_theme.dart';
 import 'page_transitions.dart';
 import 'mock_data.dart';
 import 'profile_screen.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'auth_service.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // Inicializar Google Sign-In. Es un paso requerido por la nueva versión.
+  await GoogleSignIn.instance.initialize();
+
+  // Login anónimo automático — si ya había sesión, la reutiliza.
+  await AuthService.instance.ensureSignedIn();
+
   runApp(const MyApp());
 }
 
@@ -55,7 +71,7 @@ class _MainScreenState extends State<MainScreen> {
     super.initState();
     _widgetOptions = <Widget>[
       GalleryScreen(key: _galleryKey),
-      const ProfileScreen(profileId: currentUserId, userId: currentUserId),
+      const ProfileScreen(profileId: currentUserId),
     ];
   }
 

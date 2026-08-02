@@ -7,7 +7,6 @@ import 'page_transitions.dart';
 class EditProfileScreen extends StatefulWidget {
   final String currentName;
   final String username;
-  final String currentBio;
   final Uint8List? currentAvatar;
   final Uint8List? currentCover;
 
@@ -15,7 +14,6 @@ class EditProfileScreen extends StatefulWidget {
     super.key,
     required this.currentName,
     required this.username,
-    required this.currentBio,
     this.currentAvatar,
     this.currentCover,
   });
@@ -27,7 +25,6 @@ class EditProfileScreen extends StatefulWidget {
 class _EditProfileScreenState extends State<EditProfileScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   late final TextEditingController _nameController;
-  late final TextEditingController _bioController;
   Uint8List? _avatar;
   Uint8List? _cover;
   bool _saving = false;
@@ -36,7 +33,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.currentName);
-    _bioController = TextEditingController(text: widget.currentBio);
     _avatar = widget.currentAvatar;
     _cover = widget.currentCover;
   }
@@ -44,7 +40,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   void dispose() {
     _nameController.dispose();
-    _bioController.dispose();
     super.dispose();
   }
 
@@ -70,7 +65,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     try {
       await _channel.invokeMethod('saveProfile', {
         'name': _nameController.text.trim(),
-        'bio': _bioController.text.trim(),
         if (!identical(_avatar, widget.currentAvatar)) 'avatarBytes': _avatar,
         if (!identical(_cover, widget.currentCover)) 'coverBytes': _cover,
       });
@@ -171,15 +165,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           TextField(
             controller: _nameController,
             decoration: const InputDecoration(hintText: 'Tu nombre'),
-          ),
-          const SizedBox(height: 22),
-          const Text('Presentación', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _bioController,
-            decoration: const InputDecoration(hintText: 'Una breve descripción sobre ti'),
-            maxLines: 3,
-            maxLength: 150,
           ),
           const SizedBox(height: 22),
           const Text('Nombre de usuario', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
