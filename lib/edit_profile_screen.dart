@@ -1,12 +1,14 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:whatsapp_stickers_app/profile_screen.dart';
 import 'crop_screen.dart';
 import 'page_transitions.dart';
 
 class EditProfileScreen extends StatefulWidget {
   final String currentName;
   final String username;
+  final String currentBio;
   final Uint8List? currentAvatar;
   final Uint8List? currentCover;
 
@@ -14,8 +16,9 @@ class EditProfileScreen extends StatefulWidget {
     super.key,
     required this.currentName,
     required this.username,
+    required this.currentBio,
     this.currentAvatar,
-    this.currentCover,
+    this.currentCover, 
   });
 
   @override
@@ -23,8 +26,10 @@ class EditProfileScreen extends StatefulWidget {
 }
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
-  static const _channel = MethodChannel('whatsapp_stickers_channel');
+    static const _channel = MethodChannel('whatsapp_stickers_channel');
   late final TextEditingController _nameController;
+    late final TextEditingController _bioController;
+
   Uint8List? _avatar;
   Uint8List? _cover;
   bool _saving = false;
@@ -32,14 +37,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   void initState() {
     super.initState();
-    _nameController = TextEditingController(text: widget.currentName);
-    _avatar = widget.currentAvatar;
-    _cover = widget.currentCover;
+    _nameController = TextEditingController(text: widget.currentName); // Initialize name controller
+    _bioController = TextEditingController(text: widget.currentBio); // Initialize bio controller
+    _avatar = widget.currentAvatar; // Set initial avatar
+    _cover = widget.currentCover; // Set initial cover
   }
 
   @override
   void dispose() {
     _nameController.dispose();
+    _bioController.dispose(); // Dispose bio controller
     super.dispose();
   }
 
@@ -63,12 +70,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      await _channel.invokeMethod('saveProfile', {
-        'name': _nameController.text.trim(),
-        if (!identical(_avatar, widget.currentAvatar)) 'avatarBytes': _avatar,
-        if (!identical(_cover, widget.currentCover)) 'coverBytes': _cover,
-      });
-      if (mounted) Navigator.pop(context, true);
+      // Construimos el resultado para devolverlo a ProfileScreen
+      final result = EditProfileResult(
+        name: _nameController.text.trim(),
+        bio: _bioController.text.trim(),
+        newAvatarBytes: !identical(_avatar, widget.currentAvatar) ? _avatar : null,
+        newCoverBytes: !identical(_cover, widget.currentCover) ? _cover : null,
+      );
+      if (mounted) Navigator.pop(context, result);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al guardar: $e')));
@@ -108,7 +117,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             child: Container(
               height: 110,
               width: double.infinity,
-              decoration: BoxDecoration(
+              decoration: BoxDecoration( // Decoration for cover photo
                 borderRadius: BorderRadius.circular(16),
                 color: colorScheme.primary.withValues(alpha: 0.08),
                 image: _cover != null ? DecorationImage(image: MemoryImage(_cover!), fit: BoxFit.cover) : null,
@@ -141,7 +150,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               child: Stack(
                 children: [
                   CircleAvatar(
-                    radius: 48,
+                    radius: 48, // Radius for avatar
                     backgroundColor: colorScheme.primary.withValues(alpha: 0.12),
                     backgroundImage: _avatar != null ? MemoryImage(_avatar!) : null,
                     child: _avatar == null ? Icon(Icons.person_rounded, size: 44, color: colorScheme.primary) : null,
@@ -165,6 +174,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           TextField(
             controller: _nameController,
             decoration: const InputDecoration(hintText: 'Tu nombre'),
+          ),
+          const SizedBox(height: 22),
+          const Text('Biografía', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _bioController,
+            maxLines: 3,
+            decoration: const InputDecoration(hintText: 'Cuéntanos sobre ti...'),
           ),
           const SizedBox(height: 22),
           const Text('Nombre de usuario', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),

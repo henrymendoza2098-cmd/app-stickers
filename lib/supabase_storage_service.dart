@@ -10,7 +10,8 @@ class SupabaseStorageService {
 
   // TODO: reemplaza estos dos valores con los tuyos
   // (Project Settings → API en tu dashboard de Supabase).
-  static const String _projectUrl = 'https://sghxsmrvlvkdsiuaivvn.supabase.co/rest/v1/';
+  // CORRECCIÓN: La URL del proyecto no debe incluir '/rest/v1' al final.
+  static const String _projectUrl = 'https://sghxsmrvlvkdsiuaivvn.supabase.co';
   static const String _anonKey = 'sb_publishable_IYY66tY9rYt9Enw9TzlCfA_dBm4g28j';
 
   static const String _bucket = 'stickers';
@@ -22,7 +23,7 @@ class SupabaseStorageService {
     required Uint8List bytes,
     required String contentType, // 'image/png' o 'image/webp'
   }) async {
-    final uri = Uri.parse('$_projectUrl/storage/v1/object/$_bucket/$path');
+    final uri = Uri.parse('$_projectUrl/storage/v1/object/$_bucket/$path'); // La URL correcta es '.../storage/v1/...'
 
     final response = await http.post(
       uri,
@@ -45,7 +46,7 @@ class SupabaseStorageService {
   /// Construye la URL pública de un archivo sin necesidad de subirlo
   /// (útil para saber de antemano dónde va a quedar).
   String publicUrlFor(String path) {
-    return '$_projectUrl/storage/v1/object/public/$_bucket/$path';
+    return '$_projectUrl/storage/v1/object/public/$_bucket/$path'; // La URL pública también usa '.../storage/v1/...'
   }
 
   /// Sube el tray + todos los stickers de un pack de una sola vez.

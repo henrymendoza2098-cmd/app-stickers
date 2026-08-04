@@ -2,10 +2,18 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'mock_data.dart';
-import 'create_pack_screen.dart';
 import 'favorites_repository.dart';
 import 'page_transitions.dart';
 import 'profile_screen.dart';
+import 'auth_service.dart';
+import 'firestore_service.dart';
+import 'supabase_storage_service.dart';
+import 'package:http/http.dart' as http;
+import 'package:whatsapp_stickers_app/favorites_repository.dart';
+import 'package:whatsapp_stickers_app/firestore_service.dart';
+import 'package:whatsapp_stickers_app/page_transitions.dart';
+import 'package:whatsapp_stickers_app/profile_screen.dart';
+import 'package:whatsapp_stickers_app/sticker_preview_grid.dart';
 
 /// Vista pública de un pack: solo para ver los stickers y "descargarlo"
 /// (añadirlo a WhatsApp). Sin ningún acceso de edición.
@@ -17,6 +25,7 @@ import 'profile_screen.dart';
 class PackPreviewScreen extends StatefulWidget {
   final String? realIdentifier;
   final MockPack? mockPack;
+  final String realIdentifier;
   final String packName;
   final String? publisherName;
   final String? publisherId;
@@ -27,11 +36,13 @@ class PackPreviewScreen extends StatefulWidget {
     super.key,
     this.realIdentifier,
     this.mockPack,
+    required this.realIdentifier,
     required this.packName,
     this.publisherName,
     this.publisherId,
     required this.stickerCount,
     this.isPrivate = false,
+    required this.isPrivate,
   });
 
   @override
@@ -42,7 +53,19 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   List<Uint8List> _stickers = [];
   bool _loading = true;
+  bool _isSaving = false;
+  final _firestore = FirestoreService.instance;
   final _favoritesRepo = FavoritesRepository();
+
+  // Servicios
+  final _auth = AuthService.instance;
+  final _firestore = FirestoreService.instance;
+  final _storage = SupabaseStorageService.instance;
+  Map<String, dynamic>? _packData;
+  Map<String, dynamic>? _authorData;
+  Uint8List? _authorAvatar;
+  bool _isFavorite = false;
+  bool _isLoading = true;
 
   bool get _isMock => widget.realIdentifier == null;
   bool get _isOwner => widget.publisherId == currentUserId;
@@ -55,15 +78,69 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
     } else {
       _loading = false;
     }
+    _loadData();
   }
 
   Future<void> _loadRealStickers() async {
+  Future<void> _loadData() async {
     try {
       final stickers = await _channel
           .invokeListMethod<Uint8List>('getStickersForPack', {'identifier': widget.realIdentifier});
       if (mounted) setState(() => _stickers = stickers ?? []);
     } finally {
       if (mounted) setState(() => _loading = false);
+      final futures = <Future<dynamic>>[
+        _firestore.fetchPack(widget.realIdentifier),
+        _favoritesRepo.getFavorites(),
+      ];
+      if (widget.publisherId != null) {
+        futures.add(_firestore.fetchUserProfile(widget.publisherId!));
+      }
+
+      final results = await Future.wait(futures);
+
+      final packData = results[0] as Map<String, dynamic>?;
+      final favorites = results[1] as List<Map<String, dynamic>>;
+
+      Map<String, dynamic>? authorData;
+      if (widget.publisherId != null && results.length > 2) {
+        authorData = results[2] as Map<String, dynamic>?;
+      }
+
+      if (packData == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+
+      final isFav = favorites.any((p) => p['identifier'] == widget.realIdentifier);
+
+      if (authorData != null) {
+        final avatarUrl = authorData['avatarUrl'] as String?;
+        if (avatarUrl != null && avatarUrl.isNotEmpty) {
+          try {
+            final response = await http.get(Uri.parse(avatarUrl));
+            if (response.statusCode == 200) {
+              _authorAvatar = response.bodyBytes;
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _packData = packData;
+          _authorData = authorData;
+          _isFavorite = isFav;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al cargar datos: $e')),
+        );
+      }
     }
   }
 
@@ -76,6 +153,10 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
       );
       return;
     }
+  Future<void> _toggleFavorite() async {
+    if (_packData == null) return;
+    final currentFavStatus = _isFavorite;
+    setState(() => _isFavorite = !currentFavStatus);
     try {
       final result = await _channel.invokeMethod<String>('addStickerPack', {
         'identifier': widget.realIdentifier!,
@@ -89,89 +170,41 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
     } on PlatformException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.message}')));
-    }
-  }
-
-  Future<void> _editPack() async {
-    if (widget.realIdentifier == null) return;
-
-    final updated = await Navigator.push<bool>(
-      context,
-      slideUpRoute(
-        CreatePackScreen(
-          packName: widget.packName,
-          publisher: widget.publisherName,
-          identifier: widget.realIdentifier,
-          isEditing: true,
-        ),
-      ),
-    );
-
-    if (updated == true && mounted) {
-      Navigator.pop(context, true); // Pop back to gallery/profile and signal a refresh
-    }
-  }
-
-  Future<void> _deletePack() async {
-    if (widget.realIdentifier == null) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('¿Eliminar pack?'),
-        content: Text('Se eliminará "${widget.packName}" y todos sus stickers. Esta acción no se puede deshacer.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true && mounted) {
-      try {
-        await _favoritesRepo.removeFavorite(widget.realIdentifier!);
-        await _channel.invokeMethod('deleteStickerPack', {'identifier': widget.realIdentifier!});
-        if (mounted) Navigator.pop(context, true); // Pop back and signal a refresh
-      } on PlatformException catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al eliminar: ${e.message}')));
-        }
+      if (!currentFavStatus) {
+        await _favoritesRepo.addFavorite(_packData!);
+      } else {
+        await _favoritesRepo.removeFavorite(widget.realIdentifier);
       }
-    }
-  }
-
-  void _togglePrivate() async {
-    if (widget.realIdentifier == null) return;
-    try {
-      await _channel.invokeMethod('togglePackPrivacy', {
-        'identifier': widget.realIdentifier!,
-        'isPrivate': !widget.isPrivate,
-      });
+    } catch (e) {
+      setState(() => _isFavorite = currentFavStatus); // revert on error
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(widget.isPrivate ? 'Pack hecho público' : 'Pack hecho privado')),
+          SnackBar(content: Text('Error al guardar en favoritos: $e')),
         );
-        Navigator.pop(context, true); // Pop back and signal a refresh
-      }
-    } on PlatformException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.message}')));
       }
     }
+  }
+
+  void _openAuthorProfile() {
+    if (widget.publisherId == null) return;
+    Navigator.push(
+      context,
+      slideUpRoute(ProfileScreen(profileId: widget.publisherId!)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final mock = widget.mockPack;
+    final stickerUrls = (_packData?['stickers'] as List?)?.map((s) => s['url'] as String).toList();
+    final views = _packData?['views'] as int? ?? 0;
+    final downloads = _packData?['downloads'] as int? ?? 0;
 
     return DefaultTabController(
       length: 1,
       child: Scaffold(
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+        floatingActionButtonLocation: _isOwner ? null : FloatingActionButtonLocation.centerFloat,
         floatingActionButton: ElevatedButton.icon(
           onPressed: _download,
           icon: const Icon(Icons.add_circle_outline_rounded, size: 20),
@@ -186,31 +219,17 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
             SliverAppBar(
               title: Text(widget.packName),
               pinned: true,
-              actions: [
-                if (_isOwner && !_isMock)
-                  PopupMenuButton<String>(
-                    onSelected: (value) {
-                      switch (value) {
-                        case 'edit':
-                          _editPack();
-                          break;
-                        case 'delete':
-                          _deletePack();
-                          break;
-                        case 'private':
-                          _togglePrivate();
-                          break;
-                      }
-                    },
-                    itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                      const PopupMenuItem<String>(value: 'edit', child: Text('Editar pack')),
-                      PopupMenuItem<String>(value: 'private', child: Text(widget.isPrivate ? 'Hacer público' : 'Hacer privado')),
-                      const PopupMenuDivider(),
-                      const PopupMenuItem<String>(
-                          value: 'delete', child: Text('Eliminar pack', style: TextStyle(color: Colors.red))),
-                    ],
-                  )
-              ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Detalles del paquete 📦'),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: 'Añadir a favoritos',
+            icon: Icon(
+              _isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              color: _isFavorite ? Colors.redAccent : null,
             ),
             SliverToBoxAdapter(
               child: _buildHeader(context),
@@ -245,98 +264,98 @@ class _PackPreviewScreenState extends State<PackPreviewScreen> {
   Widget _buildHeader(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.packName,
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                Row(
+          Text(
+            widget.packName,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+            onPressed: _isLoading ? null : _toggleFavorite,
+          ),
+          if (widget.publisherName != null && widget.publisherName!.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            GestureDetector(
+              onTap: widget.publisherId != null
+                  ? () {
+                      Navigator.push(
+                        context,
+                        slideUpRoute(ProfileScreen(profileId: widget.publisherId!)),
+                      );
+                    }
+                  : null,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('de ${widget.publisherName!}', style: Theme.of(context).textTheme.titleMedium),
+                  if (widget.publisherId != null) ...[
+                    const SizedBox(width: 4),
+                    Icon(Icons.chevron_right, size: 18, color: Colors.grey.shade700),
+                  ]
+                ],
+              ),
+            )
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _StatItem(value: '${widget.stickerCount}', label: 'stickers'),
+              const SizedBox(width: 16),
+              _StatItem(value: '—', label: 'descargas'), // Placeholder
+              const SizedBox(width: 16),
+              _StatItem(value: '—', label: 'vistas'), // Placeholder
+            ],
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _packData == null
+              ? const Center(child: Text('No se pudo cargar el paquete.'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
                   children: [
-                    _StatItem(value: '${widget.stickerCount}', label: 'stickers'),
-                    const SizedBox(width: 16),
-                    _StatItem(value: '—', label: 'descargas'), // Placeholder
-                    const SizedBox(width: 16),
-                    _StatItem(value: '—', label: 'vistas'), // Placeholder
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.packName,
+                                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${widget.stickerCount} stickers · $views vistas · $downloads descargas',
+                                style: const TextStyle(fontSize: 13, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        if (widget.publisherId != null)
+                          _AuthorPreviewCard(
+                            authorData: _authorData,
+                            authorAvatar: _authorAvatar,
+                            onTap: _openAuthorProfile,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    StickerPreviewGrid(
+                      previewStickerUrls: stickerUrls,
+                      crossAxisCount: 3,
+                    ),
                   ],
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          if (widget.publisherName != null && widget.publisherName!.isNotEmpty)
-            _PublisherCard(
-              publisherName: widget.publisherName!,
-              publisherId: widget.publisherId,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PublisherCard extends StatelessWidget {
-  final String publisherName;
-  final String? publisherId;
-
-  const _PublisherCard({required this.publisherName, this.publisherId});
-
-  @override
-  Widget build(BuildContext context) {
-    final cardContent = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // TODO: Usar el avatar real del creador cuando esté disponible
-          CircleAvatar(
-              radius: 12,
-              backgroundColor: Colors.grey.shade200,
-              child: Icon(Icons.person, size: 14, color: Colors.grey.shade600)),
-          const SizedBox(width: 8),
-          Text(publisherName, style: const TextStyle(fontWeight: FontWeight.bold)),
-          if (publisherId != null) const SizedBox(width: 4),
-          if (publisherId != null) const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
-        ],
-      ),
-    );
-
-    // Si no hay ID, la tarjeta no es interactiva
-    if (publisherId == null) {
-      return Card(
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: Colors.grey.shade200),
-        ),
-        child: cardContent,
-      );
-    }
-
-    // Si hay ID, la tarjeta es un botón que navega al perfil
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-            context,
-            slideUpRoute(ProfileScreen(profileId: publisherId!)),
-          );
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          // TODO: Lógica para añadir a WhatsApp
         },
-        child: cardContent,
+        label: const Text('Añadir a WhatsApp'),
+        icon: const Icon(Icons.add),
       ),
     );
   }
@@ -345,8 +364,17 @@ class _PublisherCard extends StatelessWidget {
 class _StatItem extends StatelessWidget {
   final String value;
   final String label;
+class _AuthorPreviewCard extends StatelessWidget {
+  final Map<String, dynamic>? authorData;
+  final Uint8List? authorAvatar;
+  final VoidCallback onTap;
 
   const _StatItem({required this.value, required this.label});
+  const _AuthorPreviewCard({
+    required this.authorData,
+    this.authorAvatar,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -361,6 +389,7 @@ class _StatItem extends StatelessWidget {
     );
   }
 }
+    final authorName = authorData?['name'] as String? ?? 'Autor desconocido';
 
 class _StickerGridTile extends StatelessWidget {
   final Uint8List stickerBytes;
@@ -399,6 +428,31 @@ class _MockStickerGrid extends StatelessWidget {
           decoration: BoxDecoration(
             color: Colors.grey.shade200,
             borderRadius: BorderRadius.circular(8),
+    return Card(
+      elevation: 0.5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 14,
+                backgroundColor: Colors.grey.shade200,
+                backgroundImage: authorAvatar != null ? MemoryImage(authorAvatar!) : null,
+                child: authorAvatar == null ? const Icon(Icons.person, size: 16, color: Colors.grey) : null,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                authorName,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey),
+            ],
           ),
           child: Icon(mock.previewIcon, color: mock.previewColor, size: 40),
         ),

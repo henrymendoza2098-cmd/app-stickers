@@ -1,7 +1,11 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'crop_screen.dart';
+import 'auth_service.dart';
+import 'firestore_service.dart';
+import 'supabase_storage_service.dart';
 import 'favorites_repository.dart';
 import 'page_transitions.dart';
 
@@ -10,7 +14,9 @@ class CreatePackScreen extends StatefulWidget {
   final String? publisher;
   final String? identifier;
   final bool isEditing;
+  final bool isPrivate;
   final List<Uint8List>? initialStickers;
+  final List<String>? initialStickerUrls;
 
   const CreatePackScreen({
     super.key,
@@ -18,7 +24,9 @@ class CreatePackScreen extends StatefulWidget {
     this.publisher,
     this.identifier,
     this.isEditing = false,
+    this.isPrivate = true, // Los packs nuevos son privados por defecto
     this.initialStickers,
+    this.initialStickerUrls,
   });
 
   @override
@@ -29,11 +37,17 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   final _nameController = TextEditingController();
   final _publisherController = TextEditingController();
+
+  final _firestore = FirestoreService.instance;
+  final _storage = SupabaseStorageService.instance;
+  final _auth = AuthService.instance;
   final _favoritesRepo = FavoritesRepository();
+
   final List<Uint8List> _stickers = [];
   bool _saving = false;
   String _status = '';
   bool _loadingStickers = false;
+  late bool _isPrivate;
 
   @override
   void initState() {
@@ -41,6 +55,7 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
     if (widget.packName != null) _nameController.text = widget.packName!;
     if (widget.publisher != null) _publisherController.text = widget.publisher!;
     if (widget.initialStickers != null) _stickers.addAll(widget.initialStickers!);
+    _isPrivate = widget.isPrivate;
     if (widget.isEditing) _loadExistingStickers();
   }
 
@@ -70,6 +85,8 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
 
   Future<void> _savePack() async {
     final name = _nameController.text.trim();
+    final publisher = widget.publisher ?? _publisherController.text.trim();
+
     if (name.isEmpty) {
       setState(() => _status = 'Ponle un nombre al pack');
       return;
@@ -85,12 +102,16 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
     });
 
     final identifier = widget.identifier ?? 'pack_${DateTime.now().millisecondsSinceEpoch}';
+    final uid = _auth.currentUid;
 
+    // 1. Guardar localmente. Esto es lo único indispensable — si falla,
+    // sí es un error real y detenemos todo aquí.
     try {
       await _channel.invokeMethod('saveStickerPack', {
         'identifier': identifier,
         'name': name,
-        'publisher': widget.publisher ?? _publisherController.text.trim(),
+        'publisher': publisher,
+        'authorUid': uid, // Asociar el pack con el usuario actual
         'tray': _stickers.first,
         'stickers': _stickers
             .map((bytes) => {
@@ -99,11 +120,50 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
                 })
             .toList(),
       });
-      if (mounted) Navigator.pop(context, true);
-    } on PlatformException catch (e) {
-      setState(() => _status = 'Error al guardar: ${e.message}');
-    } finally {
-      if (mounted) setState(() => _saving = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _status = 'Error al guardar: $e';
+          _saving = false;
+        });
+      }
+      return;
+    }
+
+    // 2. Si hay sesión iniciada, intentar sincronizar también con la nube.
+    // IMPORTANTE: esto es un extra. El pack YA se guardó bien localmente
+    // en el paso 1, así que si esto falla NO debe bloquear ni ocultar ese
+    // éxito — solo avisamos con un mensaje suave y seguimos igual.
+    if (!_auth.isAnonymous && _auth.currentUid != null) {
+      try {
+        final uploadResult = await _storage.uploadPack(
+          authorUid: _auth.currentUid!,
+          packId: identifier,
+          trayBytes: _stickers.first,
+          stickerBytes: _stickers,
+        );
+
+        await _firestore.publishPack(
+            packId: identifier,
+            name: name,
+            authorUid: _auth.currentUid!,
+            authorName: publisher,
+            trayUrl: uploadResult.trayUrl,
+            stickers: uploadResult.stickerUrls.map((url) => {'url': url, 'emojis': ['😀']}).toList(),
+            isPublic: false, // El pack comienza como privado en la nube
+            );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Se guardó en tu dispositivo, pero no se pudo sincronizar con tu cuenta: $e')),
+          );
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() => _saving = false);
+      Navigator.pop(context, true);
     }
   }
 
@@ -111,12 +171,27 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
     if (widget.identifier == null) return;
     setState(() => _loadingStickers = true);
     try {
-      final List<Uint8List>? stickerBytes =
-          await _channel.invokeListMethod<Uint8List>('getStickersForPack', {'identifier': widget.identifier});
-      if (stickerBytes != null && mounted) {
-        setState(() {
-          _stickers.addAll(stickerBytes);
-        });
+      if (widget.initialStickerUrls != null && widget.initialStickerUrls!.isNotEmpty) {
+        // Si nos dan URLs (pack de Firestore), las descargamos.
+        final downloadedStickers = <Uint8List>[];
+        for (final url in widget.initialStickerUrls!) {
+          final response = await http.get(Uri.parse(url));
+          if (response.statusCode == 200) {
+            downloadedStickers.add(response.bodyBytes);
+          }
+        }
+        if (mounted) {
+          setState(() => _stickers.addAll(downloadedStickers));
+        }
+      } else {
+        // Si no, cargamos desde el almacenamiento local (pack anónimo o ya existente localmente).
+        final List<Uint8List>? stickerBytes =
+            await _channel.invokeListMethod<Uint8List>('getStickersForPack', {'identifier': widget.identifier});
+        if (stickerBytes != null && mounted) {
+          setState(() {
+            _stickers.addAll(stickerBytes);
+          });
+        }
       }
     } on PlatformException catch (e) {
       setState(() => _status = 'Error cargando stickers: ${e.message}');
@@ -162,11 +237,74 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
     }
   }
 
-  void _togglePrivate() {
-    // TODO: Implementar la lógica para hacer un pack privado
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Función de pack privado (próximamente)')),
-    );
+  Future<void> _handlePrivacyToggle() async {
+    if (widget.identifier == null) return;
+
+    setState(() {
+      _saving = true;
+      _status = '';
+    });
+
+    try {
+      if (_isPrivate) {
+        // Acción: Hacer público (Publicar)
+        if (_auth.isAnonymous) {
+          await showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Se requiere una cuenta'),
+              content: const Text(
+                  'Para poder publicar packs, necesitas vincular tu cuenta con Google. Esto nos ayuda a asignarte la autoría de tus creaciones.'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+                TextButton(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      await _auth.linkWithGoogle();
+                      setState(() {}); // Re-render para reflejar el estado del login
+                    },
+                    child: const Text('Iniciar sesión con Google')),
+              ],
+            ),
+          );
+          if (_auth.isAnonymous) return; // El usuario canceló o cerró el diálogo
+        }
+
+        if (_stickers.isEmpty && widget.isEditing) await _loadExistingStickers();
+        if (_stickers.isEmpty) throw Exception('No hay stickers en el pack para publicar.');
+
+        final uploadResult = await _storage.uploadPack(
+          authorUid: _auth.currentUid!,
+          packId: widget.identifier!,
+          trayBytes: _stickers.first,
+          stickerBytes: _stickers,
+        );
+
+        await _firestore.publishPack(
+          packId: widget.identifier!,
+          name: _nameController.text.trim(),
+          authorUid: _auth.currentUid!,
+          authorName: widget.publisher ?? 'Anónimo',
+          trayUrl: uploadResult.trayUrl,
+          stickers: uploadResult.stickerUrls.map((url) => {'url': url, 'emojis': ['😀']}).toList(),
+        );
+      } else {
+        // Acción: Hacer privado (Quitar de la lista pública)
+        await _firestore.unpublishPack(widget.identifier!);
+      }
+
+      // Finalmente, cambiamos el estado local en el dispositivo
+      await _channel.invokeMethod('togglePackPrivacy', {'identifier': widget.identifier!, 'isPrivate': !_isPrivate});
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_isPrivate ? 'Pack publicado con éxito' : 'El pack ahora es privado')));
+        Navigator.pop(context, true); // Pop y señal de refresco
+      }
+    } catch (e) {
+      setState(() => _status = 'Error: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -185,12 +323,12 @@ class _CreatePackScreenState extends State<CreatePackScreen> {
                     _deletePack();
                     break;
                   case 'private':
-                    _togglePrivate();
+                    _handlePrivacyToggle();
                     break;
                 }
               },
               itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                const PopupMenuItem<String>(value: 'private', child: Text('Hacer privado')),
+                PopupMenuItem<String>(value: 'private', child: Text(_isPrivate ? 'Hacer público (publicar)' : 'Hacer privado')),
                 const PopupMenuDivider(),
                 const PopupMenuItem<String>(
                     value: 'delete', child: Text('Eliminar pack', style: TextStyle(color: Colors.red))),

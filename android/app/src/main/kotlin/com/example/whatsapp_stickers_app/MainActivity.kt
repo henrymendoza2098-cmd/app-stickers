@@ -138,13 +138,12 @@ class MainActivity : FlutterActivity() {
                 Pair(bytes, emojis)
             }
 
-            StickerPackRepository.savePack(applicationContext, identifier, name, publisher, trayBytes, stickers)
+            StickerPackRepository.savePack(applicationContext, identifier, name, publisher, null, trayBytes, stickers)
             result.success(true)
         } catch (e: Exception) {
             result.error("SAVE_ERROR", e.message, null)
         }
     }
-
     private fun handleAddStickerToPack(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
         try {
             val identifier = call.argument<String>("identifier")!!

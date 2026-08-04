@@ -3,12 +3,16 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'auth_service.dart';
+import 'firestore_service.dart';
 import 'create_pack_screen.dart';
 import 'favorites_repository.dart';
 import 'page_transitions.dart';
 import 'profile_screen.dart';
 import 'pack_preview_screen.dart';
 import 'mock_data.dart';
+import 'sticker_preview_grid.dart';
+import 'creators_feed.dart';
 
 class GalleryScreen extends StatefulWidget {
   const GalleryScreen({super.key});
@@ -20,15 +24,17 @@ class GalleryScreen extends StatefulWidget {
 class GalleryScreenState extends State<GalleryScreen> {
   static const _channel = MethodChannel('whatsapp_stickers_channel');
   List<Map<String, dynamic>> _packs = [];
-  final Map<String, Uint8List> _trayCache = {};
-  final Map<String, List<Uint8List>> _previewStickersCache = {};
   bool _loading = true;
 
+  // Servicios
+  final _firestore = FirestoreService.instance;
+  final _auth = AuthService.instance;
   final _favoritesRepo = FavoritesRepository();
   List<String> _favoritePackIds = [];
 
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _filteredPacks = [];
+  String _selectedFilter = 'Todo';
 
   @override
   void initState() {
@@ -62,33 +68,20 @@ class GalleryScreenState extends State<GalleryScreen> {
     await _loadFavorites();
   }
 
-  Future<void> _togglePrivacy(String identifier, bool isCurrentlyPrivate) async {
-    try {
-      await _channel.invokeMethod('togglePackPrivacy', {
-        'identifier': identifier,
-        'isPrivate': !isCurrentlyPrivate,
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(isCurrentlyPrivate ? 'Pack hecho público' : 'Pack hecho privado')),
-        );
-      }
-      await loadPacks();
-      await _loadFavorites();
-    } on PlatformException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.message}')));
-      }
-    }
-  }
-
   void _editPack(Map<String, dynamic> pack) {
     final identifier = pack['identifier'] as String;
     final name = pack['name'] as String;
-    final publisher = pack['publisher'] as String? ?? '';
+    // En packs de Firestore, el autor es 'authorName'. En locales, 'publisher'.
+    final publisher = (pack['authorName'] ?? pack['publisher']) as String? ?? '';
+    // CORRECCIÓN: Usar 'isPublic' de Firestore. Un pack es privado si 'isPublic' no es true.
+    final isPrivate = !(pack['isPublic'] as bool? ?? false);
+
     Navigator.push<bool>(
       context,
-      slideUpRoute(CreatePackScreen(packName: name, publisher: publisher, identifier: identifier, isEditing: true)),
+      slideUpRoute(
+        CreatePackScreen(
+            packName: name, publisher: publisher, identifier: identifier, isEditing: true, isPrivate: isPrivate),
+      ),
     ).then((updated) => {if (updated == true) loadPacks()});
   }
 
@@ -101,47 +94,22 @@ class GalleryScreenState extends State<GalleryScreen> {
 
   void _updateFilteredPacks() {
     final query = _searchController.text.toLowerCase();
-    _filteredPacks = _packs.where((pack) {
-      final name = (pack['name'] as String? ?? '').toLowerCase();
-      final isPrivate = pack['isPrivate'] as bool? ?? false;
-      return name.contains(query) && !isPrivate;
-    }).toList();
+    if (query.isEmpty) {
+      _filteredPacks = List.from(_packs);
+    } else {
+      _filteredPacks = _packs.where((pack) {
+        final name = (pack['name'] as String? ?? '').toLowerCase();
+        return name.contains(query);
+      }).toList();
+    }
   }
 
   Future<void> loadPacks() async {
     setState(() => _loading = true);
-
-    // Usar datos de prueba en plataformas de escritorio para facilitar el desarrollo
-    final isMobile = !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
-
-    if (!isMobile) {
-      _loadMockPacksForDesktop();
-      return;
-    }
-
     try {
-      final jsonStr = await _channel.invokeMethod<String>('getStickerPacks');
-      final List<dynamic> list = jsonDecode(jsonStr ?? '[]');
-      _packs = list.cast<Map<String, dynamic>>();
-
-      for (final pack in _packs) {
-        final id = pack['identifier'] as String;
-        final isDynamic = pack['isDynamic'] as bool? ?? false;
-
-        if (!_trayCache.containsKey(id)) {
-          final bytes = await _channel.invokeMethod<Uint8List>('getPackTray', {'identifier': id});
-          if (bytes != null) _trayCache[id] = bytes;
-        }
-        if (isDynamic && !_previewStickersCache.containsKey(id)) {
-          final stickerBytesList = await _channel.invokeMethod<List<dynamic>>('getFirstNStickersForPack', {'identifier': id, 'count': 4});
-          if (stickerBytesList != null)
-            _previewStickersCache[id] = stickerBytesList.cast<Uint8List>();
-        }
-      }
+      _packs = await _firestore.fetchFeedPacks();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error cargando packs: $e')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error cargando feed: $e')));
     } finally {
       if (mounted) {
         setState(() {
@@ -152,44 +120,16 @@ class GalleryScreenState extends State<GalleryScreen> {
     }
   }
 
-  /// Carga paquetes de stickers falsos para pruebas en escritorio/web.
-  void _loadMockPacksForDesktop() {
-    _packs = [
-      {
-        'identifier': 'desktop_pack_memes',
-        'name': 'Memes para PC',
-        'publisher': 'Usuario de Desktop',
-        'stickerCount': 12,
-        'isDynamic': true,
-      },
-      {
-        'identifier': 'desktop_pack_code',
-        'name': 'Stickers de Programación',
-        'publisher': 'Gemini',
-        'stickerCount': 20,
-        'isDynamic': true,
-      },
-      {
-        'identifier': 'desktop_pack_dogs',
-        'name': 'Perritos para alegrar el día',
-        'publisher': 'Amante de los animales',
-        'stickerCount': 8,
-        'isDynamic': false,
-      },
-    ];
-    // No hay previews de stickers en la web, se mostrará el icono por defecto.
-    _previewStickersCache.clear();
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _updateFilteredPacks();
-        });
-      }
-    });
-  }
-
   Future<void> _addToWhatsApp(String identifier, String name) async {
+    // TODO: Implementar la descarga de packs de la comunidad.
+    // Por ahora, el botón "Añadir" es una demo para packs que no son del usuario.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Añadir packs de la comunidad (próximamente)')),
+    );
+    return;
+
+    // El código original que solo funciona para packs locales:
+    /*
     try {
       final result = await _channel.invokeMethod<String>('addStickerPack', {
         'identifier': identifier,
@@ -207,14 +147,12 @@ class GalleryScreenState extends State<GalleryScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.message}')));
       }
-    }
+    }*/
   }
 
   Future<void> _deletePack(String identifier) async {
     await _favoritesRepo.removeFavorite(identifier);
     await _channel.invokeMethod('deleteStickerPack', {'identifier': identifier});
-    _trayCache.remove(identifier);
-    _previewStickersCache.remove(identifier);
     await loadPacks();
     await _loadFavorites();
   }
@@ -243,15 +181,13 @@ class GalleryScreenState extends State<GalleryScreen> {
   void _openPack(Map<String, dynamic> pack) {
     final identifier = pack['identifier'] as String;
     final name = pack['name'] as String;
-    final publisher = pack['publisher'] as String? ?? '';
-    final isDynamic = pack['isDynamic'] as bool? ?? false;
+    final publisher = pack['authorName'] as String? ?? '';
     final stickerCount = pack['stickerCount'] as int? ?? 0;
-    final isPrivate = pack['isPrivate'] as bool? ?? false;
+    final isPublic = pack['isPublic'] as bool? ?? true;
+    final publisherId = pack['authorUid'] as String?;
 
-    // Si es un pack dinámico (creado por el usuario), le asignamos el ID del
-    // usuario actual para que la tarjeta de autor lleve a su perfil.
-    // Para packs de demo, el publisherId será null.
-    final publisherId = isDynamic ? currentUserId : null;
+    // Incrementamos las vistas en Firestore sin esperar a que termine.
+    _firestore.incrementPackViews(identifier);
 
     Navigator.push<bool>(
       context,
@@ -262,7 +198,7 @@ class GalleryScreenState extends State<GalleryScreen> {
               publisherName: publisher,
               stickerCount: stickerCount,
               publisherId: publisherId,
-              isPrivate: isPrivate)),
+              isPrivate: !isPublic)),
     ).then((refreshed) {
       if (refreshed == true) {
         loadPacks();
@@ -282,14 +218,14 @@ class GalleryScreenState extends State<GalleryScreen> {
           : _buildGalleryBody(colorScheme),
       floatingActionButton: FloatingActionButton(
         onPressed: _showCreatePackSheet,
-        tooltip: 'Agregar',
+        tooltip: 'Crear pack',
         child: const Icon(Icons.add),
       ),
     );
   }
 
   Widget _buildGalleryBody(ColorScheme colorScheme) {
-    if (_packs.isEmpty) {
+    if (_packs.isEmpty && _selectedFilter != 'Perfiles') {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
@@ -298,7 +234,7 @@ class GalleryScreenState extends State<GalleryScreen> {
             children: [
               Icon(Icons.auto_awesome_rounded, size: 48, color: colorScheme.primary.withOpacity(0.4)),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Todavía no tienes packs.\nCrea el primero con el botón +',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey),
@@ -331,42 +267,54 @@ class GalleryScreenState extends State<GalleryScreen> {
               ),
             ),
           ),
-          const _FilterBar(),
+          _FilterBar(
+            selectedFilter: _selectedFilter,
+            onFilterSelected: (filter) => setState(() => _selectedFilter = filter),
+          ),
           Expanded(
-            child: _filteredPacks.isEmpty && _searchController.text.isNotEmpty
-                ? _buildNoResults()
-                : ListView.separated(
-                    padding: const EdgeInsets.only(top: 8, bottom: 120),
-                    itemCount: _filteredPacks.length,
-                    separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
-                    itemBuilder: (context, index) {
-                final pack = _filteredPacks[index];
-                final identifier = pack['identifier'] as String;
-                final name = pack['name'] as String;
-                final publisher = pack['publisher'] as String? ?? '';
-                final isDynamic = pack['isDynamic'] as bool? ?? false;
-                final previewStickers = kIsWeb ? null : _previewStickersCache[identifier];
-                final isFavorite = _favoritePackIds.contains(identifier);
-                final isPrivate = pack['isPrivate'] as bool? ?? false;
-
-                return _PackRow(
-                  pack: pack,
-                  previewStickers: previewStickers,
-                  onTap: () => _openPack(pack),
-                  onAdd: () => _addToWhatsApp(identifier, name),
-                  isFavorite: isFavorite,
-                  onToggleFavorite: () => _toggleFavorite(pack),
-                  isDynamic: isDynamic,
-                  isPrivate: isPrivate,
-                  onEdit: () => _editPack(pack),
-                  onDelete: () => _confirmDelete(identifier, name),
-                  onTogglePrivate: () => _togglePrivacy(identifier, isPrivate),
-                );
-              },
-            ),
+            child: _buildContentForFilter(),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildContentForFilter() {
+    if (_selectedFilter == 'Perfiles') {
+      return const CreatorsFeed();
+    }
+
+    if (_filteredPacks.isEmpty && _searchController.text.isNotEmpty) {
+      return _buildNoResults();
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.only(top: 8, bottom: 120),
+      itemCount: _filteredPacks.length,
+      separatorBuilder: (context, index) => const Divider(height: 1, indent: 16, endIndent: 16),
+      itemBuilder: (context, index) {
+        final pack = _filteredPacks[index];
+        final identifier = pack['identifier'] as String;
+        final name = pack['name'] as String? ?? 'Pack sin nombre';
+        final stickerUrls = (pack['stickers'] as List?)?.map((s) => s['url'] as String).toList();
+        final isOwner = pack['authorUid'] == _auth.currentUid;
+        final isFavorite = _favoritePackIds.contains(identifier);
+        final isPublic = pack['isPublic'] as bool? ?? true;
+
+        return _PackRow(
+          pack: pack,
+          trayUrl: pack['trayUrl'] as String?,
+          previewStickerUrls: stickerUrls,
+          onTap: () => _openPack(pack),
+          onAdd: () => _addToWhatsApp(identifier, name),
+          isFavorite: isFavorite,
+          onToggleFavorite: () => _toggleFavorite(pack),
+          isOwner: isOwner,
+          isPrivate: !isPublic,
+          onEdit: () => _editPack(pack),
+          onDelete: () => _confirmDelete(identifier, name),
+        );
+      },
     );
   }
 
@@ -448,16 +396,15 @@ class GalleryScreenState extends State<GalleryScreen> {
   }
 }
 
-class _FilterBar extends StatefulWidget {
-  const _FilterBar();
+class _FilterBar extends StatelessWidget {
+  final List<String> filters = const ['Todo', 'Perfiles', 'Siguiendo', 'Amor', 'Memes', 'Alegría', 'Reacciones'];
+  final String selectedFilter;
+  final ValueChanged<String> onFilterSelected;
 
-  @override
-  State<_FilterBar> createState() => _FilterBarState();
-}
-
-class _FilterBarState extends State<_FilterBar> {
-  final List<String> _filters = ['Todo', 'Perfiles', 'Siguiendo', 'Amor', 'Memes', 'Alegría', 'Reacciones'];
-  String _selectedFilter = 'Todo';
+  const _FilterBar({
+    required this.selectedFilter,
+    required this.onFilterSelected,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -465,18 +412,15 @@ class _FilterBarState extends State<_FilterBar> {
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
-        children: _filters.map((filter) {
-          final bool isSelected = _selectedFilter == filter;
+        children: filters.map((filter) {
+          final bool isSelected = selectedFilter == filter;
           return Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: ChoiceChip(
               label: Text(filter),
               selected: isSelected,
               onSelected: (selected) {
-                if (selected) {
-                  setState(() => _selectedFilter = filter);
-                  // Aquí se implementaría la lógica de filtrado en el futuro
-                }
+                if (selected) onFilterSelected(filter);
               },
               showCheckmark: false,
               labelStyle: TextStyle(
@@ -497,36 +441,36 @@ class _FilterBarState extends State<_FilterBar> {
 
 class _PackRow extends StatelessWidget {
   final Map<String, dynamic> pack;
-  final List<Uint8List>? previewStickers;
+  final String? trayUrl;
+  final List<String>? previewStickerUrls;
   final VoidCallback onTap;
   final VoidCallback onAdd;
   final bool isFavorite;
   final VoidCallback onToggleFavorite;
-  final bool isDynamic;
   final bool isPrivate;
+  final bool isOwner;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-  final VoidCallback onTogglePrivate;
 
   const _PackRow({
     required this.pack,
-    this.previewStickers,
+    this.trayUrl,
+    this.previewStickerUrls,
     required this.onTap,
     required this.onAdd,
     required this.isFavorite,
     required this.onToggleFavorite,
-    required this.isDynamic,
     required this.isPrivate,
+    required this.isOwner,
     required this.onEdit,
     required this.onDelete,
-    required this.onTogglePrivate,
   });
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final name = pack['name'] as String;
-    final publisher = pack['publisher'] as String? ?? '';
+    final name = pack['name'] as String? ?? 'Pack sin nombre';
+    final publisher = (pack['authorName'] ?? pack['publisher']) as String? ?? '';
 
     return InkWell(
       onTap: onTap,
@@ -556,15 +500,12 @@ class _PackRow extends StatelessWidget {
                   onPressed: onToggleFavorite,
                   tooltip: 'Marcar como favorito',
                 ),
-                if (isDynamic)
+                if (isOwner)
                   PopupMenuButton<String>(
                     onSelected: (value) {
                       switch (value) {
                         case 'edit':
                           onEdit();
-                          break;
-                        case 'private':
-                          onTogglePrivate();
                           break;
                         case 'delete':
                           onDelete();
@@ -573,7 +514,6 @@ class _PackRow extends StatelessWidget {
                     },
                     itemBuilder: (context) => [
                       const PopupMenuItem(value: 'edit', child: Text('Editar')),
-                      PopupMenuItem(value: 'private', child: Text(isPrivate ? 'Hacer público' : 'Hacer privado')),
                       const PopupMenuDivider(),
                       const PopupMenuItem(value: 'delete', child: Text('Eliminar', style: TextStyle(color: Colors.red))),
                     ],
@@ -585,18 +525,18 @@ class _PackRow extends StatelessWidget {
             const SizedBox(height: 12),
             SizedBox(
               height: 70,
-              child: (previewStickers == null || previewStickers!.isEmpty)
+              child: (previewStickerUrls == null || previewStickerUrls!.isEmpty)
                   ? Container(
                       width: double.infinity,
                       decoration: BoxDecoration(
                         color: colorScheme.primary.withOpacity(0.05),
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Icon(Icons.image_not_supported_outlined, color: Colors.grey.shade400),
+                      child: trayUrl != null ? Image.network(trayUrl!, fit: BoxFit.contain) : Icon(Icons.image_not_supported_outlined, color: Colors.grey.shade400),
                     )
                   : ListView.separated(
                       scrollDirection: Axis.horizontal,
-                      itemCount: previewStickers!.length,
+                      itemCount: previewStickerUrls!.length,
                       separatorBuilder: (context, index) => const SizedBox(width: 8),
                       itemBuilder: (context, index) {
                         return AspectRatio(
@@ -607,7 +547,7 @@ class _PackRow extends StatelessWidget {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             padding: const EdgeInsets.all(4),
-                            child: Image.memory(previewStickers![index], fit: BoxFit.contain),
+                            child: Image.network(previewStickerUrls![index], fit: BoxFit.contain),
                           ),
                         );
                       },
@@ -619,43 +559,3 @@ class _PackRow extends StatelessWidget {
     );
   }
 }
-
-/// Grid de preview para los stickers en la tarjeta del pack.
-class StickerPreviewGrid extends StatelessWidget {
-  final List<Uint8List>? previewStickers;
-
-  const StickerPreviewGrid({super.key, this.previewStickers});
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Builder(
-      builder: (context) {
-        if (previewStickers == null || previewStickers!.isEmpty) {
-          return Center(child: Icon(Icons.image_rounded, size: 48, color: colorScheme.primary.withOpacity(0.35)));
-        }
-
-        // Estilo de cuadrícula minimalista
-        final stickersToDisplay = previewStickers!.take(4).toList();
-
-        return GridView.builder(
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: 6,
-            mainAxisSpacing: 6,
-          ),
-          itemCount: stickersToDisplay.length,
-          itemBuilder: (context, index) {
-            return ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.memory(stickersToDisplay[index], fit: BoxFit.contain),
-            );
-          },
-        );
-      },
-    );
-  }
-}
- 

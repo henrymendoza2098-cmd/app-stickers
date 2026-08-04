@@ -106,6 +106,7 @@ object StickerPackRepository {
         identifier: String,
         name: String,
         publisher: String,
+        authorUid: String?,
         trayPng: ByteArray,
         stickersPng: List<Pair<ByteArray, List<String>>>
     ) {
@@ -143,6 +144,7 @@ object StickerPackRepository {
         packJson.put("identifier", identifier)
         packJson.put("name", name)
         packJson.put("publisher", publisher)
+        if (authorUid != null) packJson.put("authorUid", authorUid)
         packJson.put("tray_image_file", "tray.png")
         packJson.put("image_data_version", "1")
         packJson.put("stickers", stickerEntries)
@@ -265,6 +267,7 @@ object StickerPackRepository {
             if (isDynamic) {
                 val packData = dynamicPacksMap[pack.identifier]
                 obj.put("isPrivate", packData?.optBoolean("isPrivate", false) ?: false)
+                obj.put("authorUid", packData?.optString("authorUid"))
             } else {
                 obj.put("isPrivate", false) // El pack de demo nunca es privado
             }

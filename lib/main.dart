@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:typed_data';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'gallery_screen.dart';
@@ -63,16 +65,45 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   int _selectedIndex = 0;
-
-  late final List<Widget> _widgetOptions;
+  late List<Widget> _widgetOptions;
+  final _auth = AuthService.instance;
+  StreamSubscription<User?>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
-    _widgetOptions = <Widget>[
-      GalleryScreen(key: _galleryKey),
-      const ProfileScreen(profileId: currentUserId),
-    ];
+    _buildWidgetOptions(); // Build initial options
+    _authSubscription = _auth.auth.authStateChanges().listen((user) {
+      if (mounted) {
+        // When auth state changes, rebuild the widget options to pass the new UID.
+        // This is key to correctly handle login/logout.
+        setState(() {
+          _buildWidgetOptions();
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _buildWidgetOptions() {
+    final uid = _auth.currentUid;
+    if (uid == null) {
+      // This can happen briefly during state transitions. Show a loader.
+      _widgetOptions = [
+        GalleryScreen(key: _galleryKey),
+        const Scaffold(body: Center(child: CircularProgressIndicator())),
+      ];
+    } else {
+      _widgetOptions = [
+        GalleryScreen(key: _galleryKey),
+        ProfileScreen(profileId: uid),
+      ];
+    }
   }
 
   void _onItemTapped(int index) {
